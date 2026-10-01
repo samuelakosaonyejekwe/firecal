@@ -6,7 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.analysis import AQUA_START, VIIRS_START, NeedsData, Store
+from app.analysis import NeedsData, Store
+from app.constants import AQUA_START, VIIRS_START
 
 RES = pathlib.Path(__file__).resolve().parent.parent / "app" / "resources"
 
@@ -14,7 +15,7 @@ RES = pathlib.Path(__file__).resolve().parent.parent / "app" / "resources"
 def make_country(root, cid, k=3.0, kt=8.0, seed=0, season=(12, 1, 2)):
     """Synthetic fires inside `cid`'s bbox: VIIRS sees exactly k× MODIS cell-days."""
     rng = np.random.default_rng(seed)
-    meta = {c["id"]: c for c in json.load(open(RES / "countries.json"))}
+    meta = {c["id"]: c for c in json.loads((RES / "countries.json").read_text(encoding="utf-8"))}
     w, s, e, n = meta[cid]["view"]
     x0, y0 = int(np.ceil(w * 10)) + 2, int(np.ceil(s * 10)) + 2
     rows = []

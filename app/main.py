@@ -1,10 +1,12 @@
 """FireCal API + web app.
 
-Run:  .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8765   ->  http://127.0.0.1:8765
+Run:  .venv/bin/uvicorn app.main:app --port 8765   ->  http://127.0.0.1:8765
 """
 import hashlib
+import logging
 import os
 import pathlib
+from contextlib import asynccontextmanager
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
@@ -12,6 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .analysis import Store, NeedsData
+from .constants import MODIS_START, SERVER_MAX_BOX_DEG2 as MAX_BOX_DEG2, VIIRS_START
 from .jobs import Jobs
 from .nrt import NRTFeed
 
@@ -19,15 +22,23 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 DATA = pathlib.Path(os.environ.get("FIRECAL_DATA", ROOT / "data"))
 STATIC = pathlib.Path(__file__).resolve().parent / "static"
 RES = pathlib.Path(__file__).resolve().parent / "resources"
-MAX_BOX_DEG2 = 5000  # largest custom box (≈ 70° × 70°); whole countries have no limit
 
-app = FastAPI(title="FireCal — harmonized MODIS/VIIRS burning calendar")
-app.add_middleware(GZipMiddleware, minimum_size=1024)
-
+log = logging.getLogger("firecal")
 store = Store(DATA, RES)
-jobs = Jobs(on_ready=lambda cid: store.refresh(), keep_raw=os.environ.get("FIRECAL_KEEP_RAW") == "1")
+jobs = Jobs(on_ready=lambda cid: store.refresh())
 nrt = NRTFeed(DATA)
-nrt.start()
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    # background work starts with the server, not on import (tests and tools import this module)
+    if os.environ.get("FIRECAL_NO_LIVE") != "1":
+        nrt.start()
+    yield
+
+
+app = FastAPI(title="FireCal — harmonized MODIS/VIIRS burning calendar", lifespan=lifespan)
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # cache-busting version for static assets: changes whenever a file changes
 VERSION = hashlib.sha1(b"".join(p.read_bytes() for p in sorted(STATIC.rglob("*")) if p.is_file())).hexdigest()[:10]
@@ -49,14 +60,15 @@ def parse_bbox(bbox: str):
     return [round(w, 3), round(s, 3), round(e, 3), round(n, 3)]
 
 
-def parse_aoi(country: str | None, bbox: str | None, limit=True) -> dict:
+def parse_aoi(country: str | None, bbox: str | None) -> dict:
+    store.refresh()  # notice countries added or removed on disk since the last request (a cheap glob)
     if country:
         if country not in store.meta:
             raise HTTPException(404, f"unknown country {country!r}")
         return {"country": country}
     if bbox:
         b = parse_bbox(bbox)
-        if limit and (b[2] - b[0]) * (b[3] - b[1]) > MAX_BOX_DEG2:
+        if (b[2] - b[0]) * (b[3] - b[1]) > MAX_BOX_DEG2:
             raise HTTPException(400, "area too large: pick a country or draw a smaller box")
         return {"bbox": b}
     raise HTTPException(400, "pass country=<id> or bbox=w,s,e,n")
@@ -82,7 +94,9 @@ def meta():
     return JSONResponse({
         "countries": [{"id": c["id"], "name": c["name"], "view": store.view(c["id"]), "ready": c["id"] in ready}
                       for c in sorted(store.meta.values(), key=lambda c: c["name"])],
-        "range": {"start": "2000-11-01", "end": store.end.date().isoformat(), "viirs_start": "2012-01-20"},
+        "range": {"start": MODIS_START.date().isoformat(), "end": store.end.date().isoformat(),
+                  "viirs_start": VIIRS_START.date().isoformat()},
+        "prior": dict(zip(("k_world", "k_terra_world"), store.prior())), "max_box_deg2": MAX_BOX_DEG2,
         "jobs": jobs.status(), "version": VERSION,
     }, headers={"Cache-Control": "no-cache"})
 
@@ -136,6 +150,7 @@ def prepare(ids: list[str] = Body(...)):
         raise HTTPException(404, f"unknown countries {bad}")
     if len(ids) > 12:
         raise HTTPException(400, "at most 12 countries per request")
+    store.refresh()
     return {c: (jobs.submit(c) if c not in store.ready else {"state": "ready"}) for c in ids}
 
 
@@ -182,4 +197,5 @@ app.mount("/static", ImmutableStatic(directory=STATIC), name="static")
 
 @app.exception_handler(Exception)
 async def unhandled(request: Request, exc: Exception):
+    log.exception("unhandled error on %s", request.url.path)
     return JSONResponse(status_code=500, content={"detail": f"internal error: {exc.__class__.__name__}"})

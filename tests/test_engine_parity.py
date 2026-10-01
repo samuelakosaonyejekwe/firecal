@@ -9,7 +9,6 @@ import pathlib
 import shutil
 import subprocess
 
-import numpy as np
 import pytest
 
 from app.analysis import Store
@@ -100,3 +99,17 @@ REAL = Store(ROOT / "data", RES) if (ROOT / "data" / "countries").exists() else 
 @pytest.mark.parametrize("aoi", [{"country": "Nigeria"}, {"country": "Cyprus"}, {"bbox": [5.0, 8.0, 9.0, 12.0]}])
 def test_engine_matches_python_real(aoi):
     compare(REAL._analyze(aoi), run_js(REAL, aoi))
+
+
+def test_engine_constants_match_python():
+    """engine.js keeps JavaScript copies of the shared parameters; they must equal app/constants.py."""
+    from app import constants as C
+    out = subprocess.run(["node", "-e", "process.stdout.write(JSON.stringify(require(process.argv[1]).constants))", str(ENGINE)],
+                         capture_output=True, text=True, check=True).stdout
+    js = json.loads(out)
+    ms = lambda ts: ts.value // 10**6  # noqa: E731  (pandas ns -> JS ms)
+    assert js["MODIS_START"] == ms(C.MODIS_START) and js["AQUA_START"] == ms(C.AQUA_START)
+    assert js["VIIRS_START"] == ms(C.VIIRS_START) and js["TERRA_DRIFT"] == ms(C.TERRA_DRIFT)
+    assert js["LAMBDA"] == C.LAMBDA and js["LAMBDA_AREA"] == C.LAMBDA_AREA
+    from app.analysis import MAX_CV_ERROR
+    assert js["MAX_CV_ERROR"] == MAX_CV_ERROR

@@ -1,6 +1,8 @@
-pandas
-pyarrow
-duckdb
-fastapi
-uvicorn[standard]
-shapely>=2
+# Exact versions verified with the test suite (python 3.12)
+duckdb==1.5.6
+fastapi==0.142.2
+numpy==2.5.3
+pandas==3.0.6
+pyarrow==25.0.1
+shapely==2.1.2
+uvicorn[standard]==0.54.0

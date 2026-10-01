@@ -11,6 +11,9 @@ import concurrent.futures as cf
 import datetime as dt
 import os
 import pathlib
+import shutil
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -18,6 +21,18 @@ BASE = "https://firms.modaps.eosdis.nasa.gov/data/country"
 SENSORS = {"modis": 2000, "viirs-snpp": 2012}  # sensor -> first archive year
 DATA = pathlib.Path(os.environ.get("FIRECAL_DATA", pathlib.Path(__file__).resolve().parent.parent / "data"))
 RAW = DATA / "raw"
+TIMEOUT = 60  # seconds without data before a download is abandoned and retried
+
+
+def published(sensor: str, year: int, country: str) -> bool:
+    """Has FIRMS published this sensor-year archive for the country yet?"""
+    name = f"{sensor}_{year}_{country}.csv"
+    req = urllib.request.Request(f"{BASE}/{sensor}/{year}/{urllib.parse.quote(name)}", method="HEAD")
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT):
+            return True
+    except urllib.error.HTTPError:
+        return False
 
 
 def download(sensor: str, year: int, country: str, retries: int = 3) -> str:
@@ -30,7 +45,8 @@ def download(sensor: str, year: int, country: str, retries: int = 3) -> str:
     url = f"{BASE}/{sensor}/{year}/{urllib.parse.quote(name)}"
     for attempt in range(retries):
         try:
-            urllib.request.urlretrieve(url, tmp)
+            with urllib.request.urlopen(url, timeout=TIMEOUT) as r, open(tmp, "wb") as f:
+                shutil.copyfileobj(r, f, 1 << 20)
             tmp.rename(dest)
             return f"fetched {name} ({dest.stat().st_size / 1e6:.1f} MB)"
         except urllib.error.HTTPError as e:
@@ -38,10 +54,19 @@ def download(sensor: str, year: int, country: str, retries: int = 3) -> str:
             if e.code == 404:  # not published / no fires that year
                 return f"skipped {name} (404)"
             err = e
-        except Exception as e:  # network hiccup -> retry
+        except Exception as e:  # network hiccup or stall -> wait, then retry
             tmp.unlink(missing_ok=True)
             err = e
+        time.sleep(2 ** attempt)
     return f"failed  {name} ({err})"
+
+
+def latest_archive_year() -> int:
+    """Most recent year FIRMS has published as a yearly archive (probed on a country that always burns)."""
+    y = dt.date.today().year
+    while y > 2012 and not published("modis", y, "Brazil"):
+        y -= 1
+    return y
 
 
 def fetch_country(country: str, start: int = 2000, end: int | None = None, progress=None) -> list[str]:

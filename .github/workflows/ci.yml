@@ -1,0 +1,62 @@
+# Tests, and a build + smoke test of the Docker image (the server edition), on every push and pull request.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q tests
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build image
+        run: docker build -t firecal:ci .
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Synthetic country for the smoke test
+        run: |
+          pip install -r requirements-dev.txt
+          mkdir -p smoke && python -c "import pathlib; from tests.test_analysis import make_country; make_country(pathlib.Path('smoke'), 'Nigeria', seed=1)"
+          sudo chown -R 1000:1000 smoke   # the container runs as uid 1000
+      - name: Run container
+        run: docker run -d --name firecal -p 8765:8765 -e FIRECAL_NO_LIVE=1 -v "$PWD/smoke:/data" firecal:ci
+      - name: Smoke test
+        run: |
+          for i in $(seq 1 60); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' firecal)" = healthy ] && break
+            sleep 2
+          done
+          docker inspect -f 'health={{.State.Health.Status}} user={{.Config.User}}' firecal
+          test "$(docker inspect -f '{{.State.Health.Status}}' firecal)" = healthy
+          curl -sf localhost:8765/ | grep -q 'app.js?v='
+          curl -sf localhost:8765/api/meta | python -c "import json,sys; m=json.load(sys.stdin); assert len(m['countries']) > 200 and [c['id'] for c in m['countries'] if c['ready']] == ['Nigeria'], m['countries'][:3]"
+          curl -sf "localhost:8765/api/calendar?country=Nigeria" | python -c "import json,sys; d=json.load(sys.stdin); assert abs(d['harmonization']['k_all'] - 3) < 0.1, d['harmonization']['k_all']"
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'localhost:8765/api/calendar?country=Ghana')" = 202
+          curl -sf "localhost:8765/api/locate?lon=33.4&lat=35.1" | grep -q Cyprus
+          echo "smoke test passed"
+      - name: Container logs
+        if: always()
+        run: docker logs firecal || true

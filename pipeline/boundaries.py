@@ -1,7 +1,8 @@
-"""One-off: build app/resources/{countries.json, world.geojson} from Natural Earth.
+"""One-off: build app/resources/{countries.json, world.geojson, shapes.geojson} from Natural Earth.
 
+Input: app/resources/firms_countries.json (FIRMS country-file names, probed against the archive).
 Maps each FIRMS country-file name to a Natural Earth admin-0 shape:
-  * countries.json : [{id, name, bbox}] for all FIRMS countries (search + AOI intersection)
+  * countries.json : [{id, name, bbox, view}] for all FIRMS countries (search, zoom, AOI lookups)
   * world.geojson  : simplified 110m outlines keyed by FIRMS id (clickable world map)
   * shapes.geojson : 50m outlines keyed by FIRMS id (server-side AOI -> country lookup)
 Territories FIRMS lists separately but Natural Earth folds into a parent (e.g. Guadeloupe)
@@ -14,6 +15,7 @@ import sys
 import unicodedata
 import urllib.request
 
+import shapely
 from shapely.geometry import mapping, shape
 
 NE = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_{}m_admin_0_countries.geojson"
@@ -29,6 +31,15 @@ NO_SHAPE = {"Guadeloupe", "Martinique", "Mayotte", "French_Guiana", "United_Stat
 DISPLAY = {"Cote_d_Ivoire": "Côte d'Ivoire", "Lao_PDR": "Laos", "Republic_of_Korea": "South Korea",
            "Republic_of_Congo": "Republic of the Congo", "Swaziland": "Eswatini", "Russian_Federation": "Russia",
            "Brunei_Darussalam": "Brunei"}
+
+
+def snap(g):
+    """GeoJSON geometry snapped to 0.0001° (shared exactly by the server and the browser)."""
+    m = mapping(shapely.set_precision(g, 1e-4))
+
+    def rnd(c):
+        return [rnd(x) for x in c] if isinstance(c[0], (list, tuple)) else [round(c[0], 4), round(c[1], 4)]
+    return {"type": m["type"], "coordinates": rnd(m["coordinates"])}
 
 
 def norm(s):
@@ -51,7 +62,7 @@ def index(features):
 
 
 def main():
-    firms = json.load(open(RES / "firms_countries.json"))
+    firms = json.loads((RES / "firms_countries.json").read_text(encoding="utf-8"))
     ne50, ne110 = load(50), load(110)
     i50, i110 = index(ne50), index(ne110)
     meta, shapes, world = [], [], []
@@ -62,9 +73,10 @@ def main():
         if f50:
             g = shape(f50["geometry"])
             bbox = [round(v, 3) for v in g.bounds]
-            main = max(getattr(g, "geoms", [g]), key=lambda p: p.area)  # zoom target: main landmass
-            view = [round(v, 3) for v in main.buffer(max(0.3, (main.area ** 0.5) * 0.08)).bounds]
-            shapes.append({"type": "Feature", "properties": {"id": fid}, "geometry": mapping(g)})
+            land = max(getattr(g, "geoms", [g]), key=lambda p: p.area)  # zoom target: main landmass
+            view = [round(v, 3) for v in land.buffer(max(0.3, (land.area ** 0.5) * 0.08)).bounds]
+            # snapped to a 0.0001° grid: smaller, and exactly reproducible by app/static/geo.js
+            shapes.append({"type": "Feature", "properties": {"id": fid}, "geometry": snap(g)})
             f110 = i110.get(norm(f50["properties"]["ADMIN"]))
             gw = shape(f110["geometry"]) if f110 else g.simplify(0.05, preserve_topology=True)
             world.append({"type": "Feature", "properties": {"id": fid, "name": name},

@@ -1,6 +1,6 @@
 """Clean raw FIRMS hotspots and bin both sensors onto a common 0.1° daily grid.
 
-Output: data/{country}/grid_daily.parquet, one row per (date, cell, sensor) with any fire:
+Output: data/countries/<country>/grid_daily.parquet, one row per (date, cell, sensor) with any fire:
     d      DATE      acquisition date (UTC)
     yi, xi SMALLINT  cell index = floor(lat*10), floor(lon*10)
     s      TINYINT   0 = MODIS (Terra+Aqua, 1 km), 1 = VIIRS (S-NPP, 375 m),
@@ -15,17 +15,24 @@ Cleaning rules:
   * MODIS confidence >= 30 (drops the low-confidence class).
   * VIIRS confidence in {nominal, high} (drops 'l', mostly sun-glint / edge artefacts).
 
+Also writes static_cells.parquet: cells dominated by industrial heat (masked in live counts).
+
 Usage:  python pipeline/build.py --country Nigeria
 """
 import argparse
+import json
 import os
 import pathlib
+import shutil
+import sys
 
 import duckdb
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from app.constants import CELL  # noqa: E402
+
 DATA = pathlib.Path(os.environ.get("FIRECAL_DATA", ROOT / "data"))
-CELL = 10  # cells per degree -> 0.1°
 
 LOAD = """
 CREATE TEMP TABLE modis AS
@@ -87,17 +94,22 @@ def build_country(country: str, keep_raw: bool = True) -> str:
     con.execute(GRID.format(cell=CELL, out=tmp.as_posix()))
     con.execute(STATIC.format(cell=CELL, out=(out_dir / "static_cells.parquet").as_posix()))
     tmp.replace(out)  # atomic: the web app never sees a half-written file
+    years = con.execute("SELECT max(year(acq_date)) FROM modis").fetchone()[0]
+    (out_dir / "built.json").write_text(json.dumps({  # lets `world.py --update` spot new NASA years
+        "archive_through": int(years) if years else None,
+        "raw_files": sorted(p.name for p in raw.glob("*.csv"))}))
     summary = con.execute(f"""
         SELECT CASE s WHEN 0 THEN 'MODIS' WHEN 1 THEN 'VIIRS' ELSE 'MODIS Terra-only' END AS sensor,
                min(d) AS first, max(d) AS last,
                count(*) AS fire_cell_days, sum(n) AS detections
         FROM '{out.as_posix()}' GROUP BY s ORDER BY s
     """).df().to_string(index=False)
-    for f in (out_dir / "cache").glob("*.json"):  # analyses of the old grid are stale
-        f.unlink()
+    shutil.rmtree(out_dir / "grid_cache", ignore_errors=True)  # map layers of the old grid are stale
     if not keep_raw:
         for f in raw.glob("*.csv"):
             f.unlink()
+        if not any(raw.iterdir()):
+            raw.rmdir()
     return f"{summary}\nwrote {out} ({out.stat().st_size / 1e6:.1f} MB)"
 
 

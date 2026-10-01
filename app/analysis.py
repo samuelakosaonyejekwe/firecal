@@ -33,6 +33,7 @@ import hashlib
 import json
 import math
 import pathlib
+import shutil
 import threading
 from collections import OrderedDict
 
@@ -42,18 +43,14 @@ import pandas as pd
 import shapely
 from shapely.geometry import box, shape
 
-CELL = 10  # cells per degree
-LAMBDA = 20.0  # month -> area shrinkage (MODIS cell-days)
-LAMBDA_AREA = 50.0  # area -> world shrinkage (MODIS cell-days)
+from .constants import (AQUA_START, CELL, LAMBDA, LAMBDA_AREA, MODIS_START, TERRA_DRIFT,
+                        VIIRS_START, load_prior)
+
+# fingerprint of the analysis code: cached results are invalidated whenever the method changes
+CODE_VERSION = hashlib.sha1(b"".join(
+    (pathlib.Path(__file__).parent / f).read_bytes() for f in ("analysis.py", "constants.py"))).hexdigest()[:10]
 MAX_MAP_CELLS = 20000  # coarsen map layers beyond this many cells
-MODIS_START = pd.Timestamp("2000-11-01")  # first month of the Terra MODIS fire archive
-VIIRS_START = pd.Timestamp("2012-01-20")  # first day of the S-NPP VIIRS 375 m archive
-AQUA_START = pd.Timestamp("2002-07-04")  # first Aqua MODIS fire product day
-# Terra left the morning constellation in Oct 2022 and its overpass is drifting earlier,
-# so its detection rate falls; keep the drifted years out of the Terra-only calibration.
-TERRA_DRIFT = pd.Timestamp("2023-01-01")
-MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-DEFAULT_PRIOR = (3.5, 9.5)  # typical (MODIS, Terra-only) -> VIIRS ratios until data exist
+MAX_CV_ERROR = 15.0    # % median out-of-sample error above which results are flagged "indicative only"
 
 
 def _df(sql: str) -> pd.DataFrame:
@@ -108,8 +105,8 @@ class Store:
         self.cache_dir = data_dir / "cache"
         self.cdir.mkdir(parents=True, exist_ok=True)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.meta = {c["id"]: c for c in json.load(open(res_dir / "countries.json", encoding="utf-8"))}
-        feats = json.load(open(res_dir / "shapes.geojson"))["features"]
+        self.meta = {c["id"]: c for c in json.loads((res_dir / "countries.json").read_text(encoding="utf-8"))}
+        feats = json.loads((res_dir / "shapes.geojson").read_text(encoding="utf-8"))["features"]
         self._shape = {f["properties"]["id"]: shape(f["geometry"]) for f in feats}
         self._ids = list(self._shape)
         self._tree = shapely.STRtree([self._shape[i] for i in self._ids])
@@ -131,11 +128,15 @@ class Store:
     def refresh(self):
         """Pick up newly processed countries."""
         with self._lock:
-            ready = {p.parent.name: p.stat().st_mtime for p in self.cdir.glob("*/grid_daily.parquet")}
+            ready = {}
+            for p in self.cdir.glob("*/grid_daily.parquet"):
+                try:
+                    ready[p.parent.name] = p.stat().st_mtime
+                except FileNotFoundError:  # removed between the glob and the stat
+                    pass
             if ready == self._ready:
                 return
             self._ready = ready
-            self._prior = None
             self._mem.clear()
             self._grids.clear()
             for cid in ready:
@@ -208,23 +209,11 @@ class Store:
 
     # ---------------------------------------------------------------- prior
     def prior(self):
-        """World (all processed countries) MODIS->VIIRS and Terra->VIIRS ratios."""
-        with self._lock:
-            if self._prior is None:
-                if not self._ready:
-                    return DEFAULT_PRIOR
-                files = "[" + ",".join(f"'{self.path(c).as_posix()}'" for c in self._ready) + "]"
-                ov0 = (VIIRS_START + pd.offsets.MonthBegin(1)).date().isoformat()
-                r = dict(_rows(f"""
-                    SELECT s, count(*) FROM read_parquet({files})
-                    WHERE d >= DATE '{ov0}' AND (s <> 2 OR d < DATE '{TERRA_DRIFT.date()}')
-                    GROUP BY s"""))
-                v_all = r.get(1, 0)
-                v_pre = _rows(f"""SELECT count(*) FROM read_parquet({files})
-                    WHERE s = 1 AND d >= DATE '{ov0}' AND d < DATE '{TERRA_DRIFT.date()}'""")[0][0]
-                self._prior = (v_all / r[0] if r.get(0) else DEFAULT_PRIOR[0],
-                               v_pre / r[2] if r.get(2) else DEFAULT_PRIOR[1])
-            return self._prior
+        """Worldwide MODIS->VIIRS and Terra->VIIRS ratios: fixed and versioned (see pipeline/prior.py),
+        so results never depend on which other countries happen to be loaded."""
+        if self._prior is None:
+            self._prior = load_prior()
+        return self._prior
 
     # ---------------------------------------------------------------- series
     def daily(self, files, bbox) -> pd.DataFrame:
@@ -303,9 +292,10 @@ class Store:
             "r2_monthly": _r(r2, 3),
             "cv": cv, "cv_median_ape": cv_ape, "cv_median_ape_terra": cv_ape_t,
             "terra_check_ape": terra_check,
-            # sparse fire regions (small islands, deserts, humid forest) give noisy calibration
+            # "indicative only": few fires (small islands, deserts, humid forest), a poor monthly fit,
+            # or a large out-of-sample error; see MAX_CV_ERROR
             "overlap_viirs_cell_days": _r(n_ov, 0),
-            "low_counts": bool(n_ov < 3000 or r2 is None or r2 < 0.5),
+            "low_counts": bool(n_ov < 3000 or r2 is None or r2 < 0.5 or cv_ape is None or cv_ape > MAX_CV_ERROR),
             "scatter": [[_r(a, 1), _r(b, 1), int(i.month)] for i, a, b in zip(ov.index, ov.m, ov.v)],
             "periods": [
                 {"from": MODIS_START.date().isoformat(), "to": (AQUA_START - pd.Timedelta(days=1)).date().isoformat(),
@@ -319,7 +309,7 @@ class Store:
     def series(self, aoi):
         """Harmonized daily series for an AOI (memoized)."""
         files, ids, missing, bbox, label = self.resolve(aoi)
-        key = ("series", json.dumps(aoi, sort_keys=True), self.version(ids))
+        key = ("series", json.dumps(aoi, sort_keys=True), self.version(ids), self.prior())
         if key in self._mem:
             return self._mem[key]
         day = self.daily(files, bbox)
@@ -330,8 +320,8 @@ class Store:
     def analyze_bytes(self, aoi) -> bytes:
         """Analysis as ready-to-send JSON bytes, served straight from the disk cache when possible."""
         _, ids, _, _, _ = self.resolve(aoi)
-        # the worldwide prior changes as countries are added, and small areas lean on it: key on it too
-        key = json.dumps(aoi, sort_keys=True) + self.version(ids) + "%.6f/%.6f" % self.prior()
+        # key on the data version, the calibration prior (small areas lean on it) and the code version
+        key = json.dumps(aoi, sort_keys=True) + self.version(ids) + "%.6f/%.6f" % self.prior() + CODE_VERSION
         cache = self.cache_dir / f"cal_{hashlib.sha1(key.encode()).hexdigest()[:20]}.json"
         if cache.exists():
             return cache.read_bytes()
@@ -339,7 +329,14 @@ class Store:
         tmp = cache.with_suffix(f".{threading.get_ident()}.tmp")
         tmp.write_bytes(raw)
         tmp.replace(cache)
+        self._prune_cache()
         return raw
+
+    def _prune_cache(self, keep=400):
+        """Results from older code/data versions are never read again; keep the cache bounded."""
+        files = sorted(self.cache_dir.glob("cal_*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+        for f in files[keep:]:
+            f.unlink(missing_ok=True)
 
     def analyze(self, aoi) -> dict:
         return json.loads(self.analyze_bytes(aoi))
@@ -468,11 +465,12 @@ class Store:
     # -------------------------------------------------------------------- map
     def _country_grid(self, cid, year, month) -> pd.DataFrame:
         """Per-cell VIIRS-equivalent fire days for one country (memoized)."""
-        key = (cid, self._ready.get(cid), year, month)
+        key = (cid, self._ready.get(cid), year, month, self.prior())
         if key in self._grids:
             return self._grids[key]
-        # disk cache survives restarts; invalidated when the country's grid is rebuilt
-        disk = self.cdir / cid / "grid_cache" / f"{year or 'all'}_{month or 'all'}.parquet"
+        # disk cache survives restarts; invalidated when the grid is rebuilt or the prior changes
+        tag = hashlib.sha1(("%.6f/%.6f" % self.prior() + CODE_VERSION).encode()).hexdigest()[:8]
+        disk = self.cdir / cid / "grid_cache" / tag / f"{year or 'all'}_{month or 'all'}.parquet"
         if disk.exists() and disk.stat().st_mtime >= self.path(cid).stat().st_mtime:
             return self._grids.put(key, pd.read_parquet(disk))
         _, cal, *_ = self.series({"country": cid})
@@ -490,7 +488,11 @@ class Store:
             FROM '{self.path(cid)}' WHERE true {w} GROUP BY xi, yi HAVING val > 0""")
         if not year:
             df["val"] /= (self.end.year - MODIS_START.year + 1)
-        disk.parent.mkdir(exist_ok=True)
+        if not disk.parent.exists():  # first layer for this version: drop layers of older versions
+            for old in disk.parent.parent.glob("*"):
+                if old.is_dir():
+                    shutil.rmtree(old, ignore_errors=True)
+        disk.parent.mkdir(parents=True, exist_ok=True)
         tmp = disk.with_suffix(f".{threading.get_ident()}.tmp")
         df.to_parquet(tmp)
         tmp.replace(disk)
@@ -540,18 +542,22 @@ class Store:
         return {**self._coarsen(df, limit=15000, how="sum"), "days": sorted({d.date().isoformat() for d in g.d})}
 
     def nowcast(self, nrt: pd.DataFrame, aoi) -> dict:
-        """Last 7 complete days vs the same calendar window in every past year."""
+        """The feed's complete days (normally 6) vs the same calendar window in every past year."""
         # the feed is a rolling 168 h window: its first and last calendar days are partial
         days = pd.date_range(nrt.d.min() + pd.Timedelta(days=1), nrt.d.max() - pd.Timedelta(days=1))
+        if not len(days):
+            return {"available": False, "reason": "the live feed has no complete day yet"}
         if aoi.get("country"):
             cid = aoi["country"]
-            v = self.meta[cid].get("bbox") or (self._extent.get(cid, [None])[:4])
-            if not v or v[0] is None:
+            boxes = [b for b in (self.meta[cid].get("bbox"), self._extent.get(cid, [None] * 4)[:4]) if b and b[0] is not None]
+            if not boxes:
                 return {"available": False, "reason": "no boundary for this territory"}
+            # union of the Natural Earth bbox and the country's own data extent (borders differ, e.g. Cyprus)
+            v = [min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)]
             y0, y1, x0, x1 = self._cell_bounds(v)
             g = nrt[(nrt.yi >= y0) & (nrt.yi <= y1) & (nrt.xi >= x0) & (nrt.xi <= x1)]
             if cid in self._shape:  # border test on cell centres
-                inside = shapely.contains_xy(self._shape[cid], (g.xi + 0.5) / CELL, (g.yi + 0.5) / CELL)
+                inside = shapely.intersects_xy(self._shape[cid], (g.xi + 0.5) / CELL, (g.yi + 0.5) / CELL)
                 if cid in self._ready:  # FIRMS and Natural Earth borders differ (e.g. Cyprus):
                     own = self._own_cells(cid)  # also keep cells in the country's own fire record
                     inside |= np.array([(a, b) in own for a, b in zip(g.yi, g.xi)], dtype=bool)

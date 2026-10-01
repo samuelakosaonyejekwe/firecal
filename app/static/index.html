@@ -16,6 +16,7 @@
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
   <script defer src="/static/vendor/echarts.min.js?v={{v}}"></script>
   <script defer src="/static/engine.js?v={{v}}"></script>
+  <script defer src="/static/geo.js?v={{v}}"></script>
   <script defer src="/static/data.js?v={{v}}"></script>
   <script defer src="/static/app.js?v={{v}}"></script>
 </head>
@@ -82,7 +83,7 @@
             <li><b>Calibrate locally.</b> Over 2012+ both sensors saw the same fires. For <i>your</i> area we fit VIIRS ÷ MODIS per calendar month, shrunk toward the area ratio and then toward a worldwide ratio, so small or quiet areas stay stable.</li>
             <li><b>Three eras.</b> Terra-only (2000–Jul 2002) and Terra+Aqua (to Jan 2012) are scaled to VIIRS-equivalent; VIIRS is used as-is after that.</li>
             <li><b>Validate.</b> Leave-one-year-out cross-validation predicts each VIIRS year from MODIS alone.</li>
-            <li><b>Live.</b> The last week of VIIRS S-NPP near-real-time detections is compared with the same dates in every past year (static industrial sources masked).</li>
+            <li><b>Live.</b> The last 6 complete days of VIIRS S-NPP near-real-time detections are compared with the same dates in every past year (static industrial sources masked).</li>
           </ol>
           <p class="hint">Data: NASA FIRMS — MODIS C6.1, VIIRS S-NPP 375 m (archive + NRT). Boundaries: Natural Earth.</p>
         </details>
@@ -104,6 +105,7 @@
         </div>
       </section>
 
+      <div class="secnav-wrap" id="secnavWrap">
       <nav class="secnav" id="secnav" aria-label="Sections">
         <a href="#nowCard" data-sec="nowCard">This week</a>
         <a href="#sec-overview" data-sec="sec-overview">Overview</a>
@@ -115,6 +117,7 @@
         <a href="#sec-method" data-sec="sec-method">Harmonization</a>
         <a href="#top" class="totop" data-top aria-label="Back to top">↑</a>
       </nav>
+      </div>
 
       <div id="banner" class="banner" hidden></div>
 
@@ -247,8 +250,8 @@
     <h2 id="helpTitle">Welcome to FireCal</h2>
     <p>Satellites have watched fires since 2000, but the older <b>MODIS</b> sensors and the newer, sharper <b>VIIRS</b> sensor count them differently. FireCal <b>harmonizes</b> both into one consistent 24-year burning calendar for any place on Earth.</p>
     <ol>
-      <li><b>Pick an area.</b> Search a country, click it on the map, tap <b>◎ Me</b>, or <b>Draw area</b> for a custom box. A country opened for the first time takes a minute or two to load; after that it's instant.</li>
-      <li><b>Check this week.</b> The <b>Early warning</b> card compares the last week of live NASA detections with the same dates in every past year.</li>
+      <li><b>Pick an area.</b> Search a country, click it on the map, tap <b>◎ Me</b>, or <b>Draw area</b> for a custom box (up to 20° × 20° on the website).</li>
+      <li><b>Check this week.</b> The <b>Early warning</b> card compares the last 6 complete days of live NASA detections with the same dates in every past year.</li>
       <li><b>Read the calendar.</b> Every month since 2000 appears as one square: darker means more burning. Switch to <b>Anomaly</b> to spot unusual months, and tap a row to open that year day by day.</li>
       <li><b>Plan.</b> <b>Critical periods</b> show when the season opens, peaks and closes. <b>What this means</b> summarizes it for responders, land managers or scientists.</li>
       <li><b>Share.</b> Every view has its own link. Print a report or download the data as CSV.</li>

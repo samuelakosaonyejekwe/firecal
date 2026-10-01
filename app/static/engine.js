@@ -13,6 +13,7 @@
   const VIIRS_START = Date.UTC(2012, 0, 20);
   const TERRA_DRIFT = Date.UTC(2023, 0, 1);
   const LAMBDA = 20, LAMBDA_AREA = 50;
+  const MAX_CV_ERROR = 15; // % (same as analysis.py)
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
   // ---------- small numeric helpers (numpy/pandas semantics) ----------
@@ -109,7 +110,7 @@
         k_world: r(prior.k_world, 3), k_terra_world: r(prior.k_terra_world, 3), r2_monthly: r(r2, 3),
         cv, cv_median_ape: cvApe, cv_median_ape_terra: cvApeT,
         terra_check_ape: errs.length ? r(median(errs), 1) : null,
-        overlap_viirs_cell_days: r(nOv, 0), low_counts: nOv < 3000 || r2 == null || r2 < 0.5,
+        overlap_viirs_cell_days: r(nOv, 0), low_counts: nOv < 3000 || r2 == null || r2 < 0.5 || cvApe == null || cvApe > MAX_CV_ERROR,
         scatter: ov.map((row) => [r(row.m, 1), r(row.v, 1), row.mon]),
         periods: [
           { from: iso(MODIS_START), to: iso(AQUA_START - DAY), source: "MODIS Terra × k_terra" },
@@ -265,6 +266,7 @@
              max: r(Math.max(...hist), 1), percentile: r(lt * 100 + eq * 50, 0), n_years: hist.length, record: total > Math.max(...hist) };
   }
 
-  const api = { analyze, series, nowcast, harmonize, MODIS_START, VIIRS_START, DAY };
+  const api = { analyze, series, nowcast, harmonize, DAY,
+                constants: { MODIS_START, AQUA_START, VIIRS_START, TERRA_DRIFT, LAMBDA, LAMBDA_AREA, MAX_CV_ERROR } };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.FireEngine = api;
 })(typeof self !== "undefined" ? self : this);

@@ -1,4 +1,4 @@
-"""Near-real-time hotspots (last 7 days) for the early-warning panel.
+"""Near-real-time hotspots (last 7 days) for the server edition's early-warning panel.
 
 Source: FIRMS global VIIRS S-NPP 375 m NRT feed — the same satellite and sensor as the
 harmonized record's reference, so current activity is directly comparable with history.
@@ -14,9 +14,9 @@ import urllib.request
 import duckdb
 import pandas as pd
 
-URL = "https://firms.modaps.eosdis.nasa.gov/data/active_fire/suomi-npp-viirs-c2/csv/SUOMI_VIIRS_C2_Global_7d.csv"
+from .constants import CELL, NRT_URL as URL
+
 REFRESH = 3 * 3600
-CELL = 10
 
 
 class NRTFeed:

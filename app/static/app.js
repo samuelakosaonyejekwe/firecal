@@ -319,14 +319,16 @@ async function loadAOI() {
     if (data.needs_data) {
       if (!data.missing.length) {
         state.data = null; $("results").hidden = true; setBusy(false);
-        banner("No land with FIRMS coverage in this box. Try drawing over land.", "warn");
+        banner("No land with fire records in this box. Try drawing over land.", "warn");
       } else prepare(data.missing.map((m) => m.id), token);
       return;
     }
     state.data = data;
     showResults();
     if (FireData.mode === "static") loadNowcast(a, token, data);
-    if (data.missing.length && FireData.mode === "server") {
+    if (data.missing.length && FireData.mode === "static") {
+      banner(`<b>Partial coverage.</b> This box also covers ${data.missing.map((m) => esc(m.name)).join(", ")}, whose record isn't published yet, so fires there are not counted.`, "warn");
+    } else if (data.missing.length && FireData.mode === "server") {
       banner(`<b>Partial coverage.</b> This box also covers ${data.missing.map((m) => esc(m.name)).join(", ")}, which ${data.missing.length > 1 ? "haven't" : "hasn't"} been loaded yet.
         <button type="button" id="loadMissing">Load ${data.missing.length > 1 ? "them" : "it"}</button>`, "warn");
       $("loadMissing").onclick = () => prepare(data.missing.map((m) => m.id), token);
@@ -438,14 +440,20 @@ function setupNav() {
       l.classList.toggle("on", on);
       if (on) {
         l.setAttribute("aria-current", "true");
-        // keep the active chip visible inside the menu without scrolling the page
-        const left = l.offsetLeft - (nav.clientWidth - l.offsetWidth) / 2;
-        nav.scrollTo({ left: Math.max(0, left), behavior: "smooth" });
+        // keep the active chip visible inside the menu; instant, and only when needed, so it never
+        // interrupts the page's own smooth scroll
+        if (l.offsetLeft < nav.scrollLeft || l.offsetLeft + l.offsetWidth > nav.scrollLeft + nav.clientWidth)
+          nav.scrollLeft = Math.max(0, l.offsetLeft - (nav.clientWidth - l.offsetWidth) / 2);
       } else l.removeAttribute("aria-current");
     }
   };
   const offset = () => nav.getBoundingClientRect().bottom + 24;
+  const topbar = document.querySelector(".topbar"), wrap = $("secnavWrap");
+  const measure = () => document.documentElement.style.setProperty("--topbar-h", `${topbar.offsetHeight}px`);
+  measure();
+  addEventListener("resize", measure);
   const spy = () => {
+    wrap.classList.toggle("stuck", wrap.getBoundingClientRect().top <= topbar.offsetHeight + 1);
     if (performance.now() < lockUntil) return;
     const line = offset();
     let active = null;
@@ -468,7 +476,8 @@ function setupNav() {
     if (!el || el.hidden) return;
     setOn(a.dataset.sec);
     lockUntil = performance.now() + 1250; // don't let the spy flicker during the smooth scroll
-    const target = () => Math.max(0, scrollY + el.getBoundingClientRect().top - (nav.getBoundingClientRect().height + parseFloat(getComputedStyle(nav).top) + 12));
+    // land just below the stuck menu: header + menu band + a small gap
+    const target = () => Math.max(0, scrollY + el.getBoundingClientRect().top - (topbar.offsetHeight + wrap.offsetHeight + 12));
     scrollTo({ top: target(), behavior: "smooth" });
     // content above can still grow while we scroll (live data arriving): settle on the exact spot
     setTimeout(() => { const y = target(); if (Math.abs(y - scrollY) > 6) scrollTo({ top: y, behavior: "smooth" }); }, 750);
@@ -484,7 +493,7 @@ function syncNav() {
 
 function renderAll() {
   if (!state.data) return;
-  renderKPIs(); renderBriefing(); renderCritical(); renderUnusual(); renderCV();
+  renderKPIs(); renderBriefing(); renderCritical(); renderUnusual(); renderCV(); sizeDaily();
   markAllDirty();
   syncNav();
 }
@@ -561,6 +570,14 @@ function renderNowcast() {
 }
 
 // ───────────────────────── KPIs ─────────────────────────
+function confidenceIssues(h) { // why results are "indicative only" (mirrors low_counts in analysis.py)
+  const out = [];
+  if (h.overlap_viirs_cell_days < 3000) out.push({ short: "few fires", long: `only ${fmt(h.overlap_viirs_cell_days)} VIIRS fire cell-days in the 2012+ overlap years, so the calibration leans on the worldwide ratio` });
+  if (h.r2_monthly == null || h.r2_monthly < 0.5) out.push({ short: "noisy monthly fit", long: `the month-by-month fit is weak (R² ${h.r2_monthly ?? "n/a"})` });
+  if (h.cv_median_ape == null || h.cv_median_ape > 15) out.push({ short: "large test error", long: `predicting held-out years misses by ${h.cv_median_ape ?? "an unknown"}% (median)` });
+  return out;
+}
+
 function statusOf(z) {
   if (z == null) return { label: "No data", color: css("--muted") };
   if (z >= 2) return { label: "Extreme, well above normal", color: css("--critical") };
@@ -581,7 +598,7 @@ function renderKPIs() {
     { label: "Most unusual month", value: top ? `${MONTHS[top.month - 1]} ${top.year}` : "None", note: top ? `${signed(top.z)} σ from normal (${top.z > 0 ? "more" : "less"} burning)` : "No month beyond ±2σ" },
     { label: "Harmonization skill", value: h.cv_median_ape != null ? `±${h.cv_median_ape}%` : "–",
       note: `median out-of-sample error · 1 MODIS ≈ ${fmt(h.k_all, 2)} VIIRS cell-days`,
-      status: h.low_counts ? { label: "Few fires here: indicative only", color: css("--warning") } : { label: "Robust calibration", color: css("--good") } },
+      status: h.low_counts ? { label: `Indicative only: ${confidenceIssues(h).map((i) => i.short).join(", ")}`, color: css("--warning") } : { label: "Robust calibration", color: css("--good") } },
   ];
   $("kpis").innerHTML = tiles.map((t) => `
     <div class="kpi"><div class="label">${esc(t.label)}</div><div class="value">${esc(t.value)}</div>
@@ -617,7 +634,7 @@ function renderBriefing() {
   const lfit = linfit(timed.map((s) => s.start_year), timed.map((s) => s.length));
   const recent = d.unusual.filter((u) => u.year >= d.range.last_full - 4);
   const li = (html) => `<li>${html}</li>`;
-  const lc = h.low_counts ? ' <span class="muted">(low confidence: few fires here)</span>' : "";
+  const lc = h.low_counts ? ` <span class="muted">(low confidence: ${confidenceIssues(h).map((i) => i.short).join(", ")})</span>` : "";
   const now = new Date(), monthName = MONTHS_LONG[now.getUTCMonth()];
   const olText = ol.change == null || (ol.past + ol.next) < 1 ? "Little burning is normally recorded around this time of year."
     : Math.abs(ol.change) < 15 ? `Burning normally stays <b>about level</b> over the next 30 days.`
@@ -643,7 +660,7 @@ function renderBriefing() {
     scientists: [
       li(`<b>Harmonization:</b> MODIS → VIIRS-equivalent with k = ${h.k_all} (Terra-only ${h.k_terra_all}); monthly R² ${h.r2_monthly ?? "–"}; leave-one-year-out median error ${h.cv_median_ape ?? "–"}% (Terra-only ${h.cv_median_ape_terra ?? "–"}%).`),
       li(`<b>Independent check:</b> Terra-only and Terra+Aqua reconstructions agree within ${h.terra_check_ape ?? "–"}% (2003–2011).`),
-      li(`<b>Sample:</b> ${fmt(h.overlap_viirs_cell_days)} VIIRS fire cell-days in the overlap years${h.low_counts ? "; <b>low counts</b>, so the calibration leans on the worldwide prior (k = " + h.k_world + ")" : ""}.`),
+      li(`<b>Sample:</b> ${fmt(h.overlap_viirs_cell_days)} VIIRS fire cell-days in the overlap years (worldwide prior k = ${h.k_world})${h.low_counts ? `. <b>Indicative only:</b> ${confidenceIssues(h).map((i) => i.long).join("; ")}` : ""}.`),
       trend != null ? li(`<b>Trend:</b> ${signed(trend, 1)}% per decade in annual fire cell-days (OLS, ${yr.years[0]}–${yr.years[yr.years.length - 1]}).`) : "",
       FireData.mode === "server"
         ? li(`<b>Reuse:</b> download the daily series (CSV) or query <code>api/calendar?${esc(aoiQuery(state.aoi))}</code>. <a href="docs" target="_blank" rel="noopener">API docs</a>.`)
@@ -766,6 +783,14 @@ function renderProfile() {
     `<span class="key"><span class="ln" style="border-color:${sc}"></span>Season ${esc(s.label)}</span>`;
 }
 
+// the daily calendar's height depends on its width; set it before it is drawn (it renders lazily),
+// so content below doesn't shift while someone is scrolling or jumping past it
+function sizeDaily() {
+  const w = $("chDaily").clientWidth || 800;
+  const cell = Math.max(5, Math.min(22, Math.floor((w - 44) / 54)));
+  $("chDaily").style.height = `${cell * 7 + 56}px`;
+  return cell;
+}
 function renderDaily() {
   const d = state.data, y = +state.dayYear, dd = d.daily, data = [];
   for (let i = 0; i < dd.h.length; i++) {
@@ -773,9 +798,7 @@ function renderDaily() {
     if (+iso.slice(0, 4) === y) data.push([iso, dd.h[i], i]);
   }
   const vmax = Math.max(1, quantile(dd.h, 0.99));
-  const w = $("chDaily").clientWidth || 800;
-  const cell = Math.max(5, Math.min(22, Math.floor((w - 44) / 54)));
-  $("chDaily").style.height = `${cell * 7 + 56}px`;
+  const cell = sizeDaily();
   chart("chDaily").resize();
   const muted = css("--muted");
   chart("chDaily").setOption({
@@ -822,7 +845,7 @@ function renderTotals() {
   const colorOf = (z) => (z >= 2 ? hi2 : z >= 1 ? hi1 : z <= -2 ? lo2 : z <= -1 ? lo1 : css("--axis"));
   chart("chTotals").setOption({
     ...base(),
-    grid: { left: 64, right: 24, top: 8, bottom: 26 },
+    grid: { left: 64, right: 24, top: 24, bottom: 26 },
     xAxis: { type: "value", ...axisCommon(), axisLabel: { color: css("--muted"), fontSize: 11, formatter: kfmt } },
     yAxis: { type: "category", data: ss.map((s) => s.label), inverse: true, ...axisCommon(), splitLine: { show: false } },
     tooltip: { ...base().tooltip, trigger: "axis", axisPointer: { type: "shadow", shadowStyle: { color: css("--grid"), opacity: 0.5 } },
@@ -831,7 +854,7 @@ function renderTotals() {
                (s.from_modis ? `<br><span style="color:${css("--muted")}">Harmonized from MODIS</span>` : ""); } },
     series: [{ type: "bar", barWidth: "58%", data: ss.map((s) => ({ value: s.total, itemStyle: { color: colorOf(s.z), borderRadius: [0, 4, 4, 0] } })),
       markLine: { symbol: "none", silent: true, data: [{ xAxis: mean }], lineStyle: { color: css("--ink-2"), type: "dashed" },
-                  label: { formatter: "Mean", color: css("--ink-2"), position: "end" } } }],
+                  label: { formatter: "Mean", color: css("--ink-2"), position: "start" } } }],
   }, true);
 }
 
@@ -887,7 +910,7 @@ function renderCV() {
     <p class="sub">Monthly fit R² <b>${h.r2_monthly ?? "–"}</b> · median error <b>${h.cv_median_ape ?? "–"}%</b> (Terra+Aqua), <b>${h.cv_median_ape_terra ?? "–"}%</b> (Terra-only).
     Terra-only and Terra+Aqua estimates agree within <b>${h.terra_check_ape ?? "–"}%</b> for 2003–2011 (a check independent of VIIRS).
     Worldwide prior: 1 MODIS ≈ ${h.k_world} VIIRS cell-days.</p>
-    ${h.low_counts ? `<p class="sub caution"><b>Caution:</b> only ${fmt(h.overlap_viirs_cell_days)} VIIRS fire cell-days in the overlap years here, so the calibration leans on the worldwide prior. Annual totals and season timing are more reliable than single months; a larger area gives a tighter fit.</p>` : ""}
+    ${h.low_counts ? `<p class="sub caution"><b>Caution, indicative only:</b> ${confidenceIssues(h).map((i) => i.long).join("; ")}. Annual totals and season timing are more reliable than single months; a larger area with more fires gives a tighter fit.</p>` : ""}
     <table><thead><tr><th>Year</th><th class="num">VIIRS observed</th><th class="num">Predicted</th><th class="num">Error</th><th class="num">Raw MODIS</th></tr></thead><tbody>
     ${h.cv.map((r) => `<tr><td>${r.year}</td><td class="num">${fmt(r.obs)}</td><td class="num">${fmt(r.pred)}</td><td class="num">${r.ape == null ? "–" : r.ape + "%"}</td><td class="num">${fmt(r.raw)}</td></tr>`).join("")}
     </tbody></table>`;
@@ -1041,7 +1064,7 @@ async function init() {
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", rethemed);
   addEventListener("hashchange", () => { const a = aoiFromHash(); if (a) selectAOI(a); });
   let rt;
-  addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { Object.values(charts).forEach((c) => c.resize()); if (state.data) { dirty.add("chDaily"); flush(); } }, 150); });
+  addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { Object.values(charts).forEach((c) => c.resize()); if (state.data) { sizeDaily(); dirty.add("chDaily"); flush(); } }, 150); });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && drawing) { setDrawing(false); dragStart = null; drawAOI(); }
     if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("search").focus(); }

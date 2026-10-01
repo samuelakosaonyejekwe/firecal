@@ -30,7 +30,7 @@
   // ───────────────────────── server edition ─────────────────────────
   const Server = {
     mode: "server",
-    meta: () => fetchJSON("api/meta"),
+    async meta() { const m = await fetchJSON("api/meta"); this.maxBoxDeg2 = m.max_box_deg2; return m; },
     calendar: (a) => fetchJSON(`api/calendar?${aoiQuery(a)}`),
     nowcast: (a) => fetchJSON(`api/nowcast?${aoiQuery(a)}`, {}, 2),
     grid: (bbox, year, month) => {
@@ -43,7 +43,7 @@
     locate: (lon, lat) => fetchJSON(`api/locate?lon=${lon}&lat=${lat}`),
     prepare: (ids) => fetchJSON("api/prepare", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ids) }, 2),
     jobs: () => fetchJSON("api/jobs", {}, 2),
-    maxBoxDeg2: 5000,
+    maxBoxDeg2: Infinity, // set from the server's meta
   };
 
   // ───────────────────────── static edition ─────────────────────────
@@ -67,35 +67,19 @@
     return out;
   }
 
-  async function world() {
-    if (!WORLD) WORLD = await once("world", () => fetchJSON("world.geojson")).then((g) => {
-      for (const f of g.features) { // bounding box per country for quick lookups
-        let w = 180, s = 90, e = -180, n = -90;
-        const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
-        for (const p of polys) for (const ring of p) for (const [x, y] of ring) { w = Math.min(w, x); e = Math.max(e, x); s = Math.min(s, y); n = Math.max(n, y); }
-        f.bbox = [w, s, e, n];
-      }
-      return g;
-    });
-    return WORLD;
-  }
-  function inRing(x, y, ring) {
-    let inside = false;
-    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-      const [xi, yi] = ring[i], [xj, yj] = ring[j];
-      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-    }
-    return inside;
-  }
-  function inFeature(x, y, f) {
-    const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
-    return polys.some((p) => inRing(x, y, p[0]) && !p.slice(1).some((hole) => inRing(x, y, hole)));
+  // country borders for boxes and "◎ Me": the server's own file (1:50m), loaded only when needed
+  const shapes = () => once("shapes", () => fetchJSON("shapes.geojson"));
+  async function countriesTouching(bbox) {
+    const ids = (await shapes()).features.filter((f) => FireGeo.boxTouches(f, bbox)).map((f) => f.properties.id);
+    const [w, s, e, n] = bbox; // shapeless territories (e.g. Guadeloupe): by data extent, as on the server
+    for (const c of META.countries) if (c.extent && !(c.extent[2] < w || c.extent[0] > e || c.extent[3] < s || c.extent[1] > n)) ids.push(c.id);
+    return [...new Set(ids)].sort();
   }
 
   async function boxSeries(bbox, onProgress) {
     const idx = await once("tiles", () => fetchJSON("data/tiles/index.json"));
     const { y0, y1, x0, x1 } = cellBounds(bbox);
-    const T = 20, wanted = [];
+    const T = idx.tile_cells, wanted = [];
     for (let ty = Math.floor(y0 / T); ty <= Math.floor(y1 / T); ty++)
       for (let tx = Math.floor(x0 / T); tx <= Math.floor(x1 / T); tx++)
         if (idx.tiles[`${ty}_${tx}`] != null) wanted.push([ty, tx]);
@@ -129,9 +113,10 @@
 
   const Static = {
     mode: "static",
-    maxBoxDeg2: 400,
+    maxBoxDeg2: Infinity, // set from data/meta.json
     async meta() {
       META = await fetchJSON("data/meta.json", { cache: "no-cache" });
+      this.maxBoxDeg2 = META.max_box_deg2;
       const live = await fetchJSON("data/live/meta.json", { cache: "no-cache" }, 2).catch(() => null);
       return { ...META, live };
     },
@@ -142,11 +127,13 @@
         return once(`cal:${a.country}`, () => fetchJSON(`data/countries/${encodeURIComponent(a.country)}.json`));
       }
       return once(`box:${a.bbox.join(",")}`, async () => {
-        const S = await boxSeries(a.bbox, onProgress);
-        const g = await world();
         const [w, s, e, n] = a.bbox;
-        const touched = g.features.filter((f) => !(f.bbox[2] < w || f.bbox[0] > e || f.bbox[3] < s || f.bbox[1] > n)).map((f) => f.properties.id);
+        const touched = await countriesTouching(a.bbox);
         const byId = Object.fromEntries(META.countries.map((x) => [x.id, x]));
+        const ready = touched.filter((id) => byId[id]?.ready);
+        if (!touched.length) return { unavailable: true, detail: "No land with fire records in this box. Try drawing over land." };
+        if (!ready.length) return { unavailable: true, detail: `No harmonized record is published yet for ${touched.map((id) => byId[id]?.name || id).join(", ")}.` };
+        const S = await boxSeries(a.bbox, onProgress);
         const label = `${Math.abs(s).toFixed(1)}°${s < 0 ? "S" : "N"}–${Math.abs(n).toFixed(1)}°${n < 0 ? "S" : "N"}, ${Math.abs(w).toFixed(1)}°${w < 0 ? "W" : "E"}–${Math.abs(e).toFixed(1)}°${e < 0 ? "W" : "E"}`;
         return FireEngine.analyze(S, META.prior, {
           aoi: a, label, view: a.bbox,
@@ -165,9 +152,9 @@
       } else {
         const { y0, y1, x0, x1 } = cellBounds(a.bbox);
         const ix = await once("liveindex", () => fetchJSON("data/live/tiles/index.json", { cache: "no-cache" }));
-        const want = [];
-        for (let ty = Math.floor(y0 / 100); ty <= Math.floor(y1 / 100); ty++)
-          for (let tx = Math.floor(x0 / 100); tx <= Math.floor(x1 / 100); tx++)
+        const want = [], T = ix.tile_cells;
+        for (let ty = Math.floor(y0 / T); ty <= Math.floor(y1 / T); ty++)
+          for (let tx = Math.floor(x0 / T); tx <= Math.floor(x1 / T); tx++)
             if (ix.tiles[`${ty}_${tx}`] != null) want.push(`${ty}_${tx}`);
         const counts = new Map(days.map((d) => [d, 0]));
         for (const t of await Promise.all(want.map((k) => once(`live:${k}`, () => fetchJSON(`data/live/tiles/${k}.json`, { cache: "no-cache" }))))) {
@@ -185,9 +172,9 @@
       const key = year ? `y${year}` : month ? `m${String(month).padStart(2, "0")}` : "all";
       if (zoom < 4) return once(`map:${key}:ov`, () => fetchJSON(`data/map/${key}/overview.json`)).catch(() => ({ cell: 0.5, max: 0, cells: [] }));
       const ix = await once(`map:${key}:ix`, () => fetchJSON(`data/map/${key}/index.json`)).catch(() => ({ tiles: [], max: 0 }));
-      const have = new Set(ix.tiles), { y0, y1, x0, x1 } = cellBounds(bbox), want = [];
-      for (let ty = Math.floor(y0 / 100); ty <= Math.floor(y1 / 100); ty++)
-        for (let tx = Math.floor(x0 / 100); tx <= Math.floor(x1 / 100); tx++) if (have.has(`${ty}_${tx}`)) want.push(`${ty}_${tx}`);
+      const have = new Set(ix.tiles), { y0, y1, x0, x1 } = cellBounds(bbox), want = [], T = ix.tile_cells || 100;
+      for (let ty = Math.floor(y0 / T); ty <= Math.floor(y1 / T); ty++)
+        for (let tx = Math.floor(x0 / T); tx <= Math.floor(x1 / T); tx++) if (have.has(`${ty}_${tx}`)) want.push(`${ty}_${tx}`);
       const parts = await Promise.all(want.map((k) => once(`map:${key}:${k}`, () => fetchJSON(`data/map/${key}/${k}.json`))));
       return { cell: 0.1, max: ix.max, cells: parts.flatMap((p) => p.cells) };
     },
@@ -198,9 +185,9 @@
         return { ...ov, fetched_at: lm.fetched_at };
       }
       const ix = await once("liveindex", () => fetchJSON("data/live/tiles/index.json", { cache: "no-cache" }));
-      const { y0, y1, x0, x1 } = cellBounds(bbox), want = [];
-      for (let ty = Math.floor(y0 / 100); ty <= Math.floor(y1 / 100); ty++)
-        for (let tx = Math.floor(x0 / 100); tx <= Math.floor(x1 / 100); tx++) if (ix.tiles[`${ty}_${tx}`] != null) want.push(`${ty}_${tx}`);
+      const { y0, y1, x0, x1 } = cellBounds(bbox), want = [], T = ix.tile_cells;
+      for (let ty = Math.floor(y0 / T); ty <= Math.floor(y1 / T); ty++)
+        for (let tx = Math.floor(x0 / T); tx <= Math.floor(x1 / T); tx++) if (ix.tiles[`${ty}_${tx}`] != null) want.push(`${ty}_${tx}`);
       const sums = new Map();
       for (const t of await Promise.all(want.map((k) => once(`live:${k}`, () => fetchJSON(`data/live/tiles/${k}.json`, { cache: "no-cache" })))))
         for (const [, xi, yi, n] of t.rows) { const k = `${xi},${yi}`; sums.set(k, (sums.get(k) || 0) + n); }
@@ -209,9 +196,9 @@
       return { cell: 0.1, max: vals.length ? vals[Math.floor(0.99 * (vals.length - 1))] : 0, cells, days: lm.days, fetched_at: lm.fetched_at };
     },
     async locate(lon, lat) {
-      const g = await world();
-      const f = g.features.find((f) => lon >= f.bbox[0] && lon <= f.bbox[2] && lat >= f.bbox[1] && lat <= f.bbox[3] && inFeature(lon, lat, f));
-      return { country: f?.properties.id || null, name: f?.properties.name || null };
+      const f = (await shapes()).features.find((f) => FireGeo.pointTouches(f, lon, lat));
+      const id = f?.properties.id || null;
+      return { country: id, name: id ? META.countries.find((c) => c.id === id)?.name : null };
     },
     prepare: async () => ({}),
     jobs: async () => ({}),

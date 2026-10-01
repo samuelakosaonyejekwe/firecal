@@ -51,8 +51,9 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(req.url);
   if (url.origin === location.origin) {
     const p = url.pathname.slice(BASE.length - 1); // path relative to the app root, starting with "/"
-    if (p.startsWith("/api/jobs") || p.startsWith("/api/meta") || p.startsWith("/data/meta.json")) return; // always live
-    if (p.startsWith("/api/") || p.startsWith("/data/live/")) e.respondWith(networkFirst(req, DATA));      // fresh, offline fallback
+    if (p.startsWith("/api/jobs") || p.startsWith("/api/prepare")) return;                                  // progress: always live
+    if (p.startsWith("/api/") || p.startsWith("/data/live/") || p.startsWith("/data/meta.json"))
+      e.respondWith(networkFirst(req, DATA));                                                               // fresh, offline fallback
     else if (p.startsWith("/data/")) e.respondWith(staleWhileRevalidate(req, DATA, e));                    // precomputed history
     else if (p.startsWith("/static/")) e.respondWith(cacheFirst(req, SHELL));                              // versioned URLs
     else e.respondWith(networkFirst(req, SHELL));

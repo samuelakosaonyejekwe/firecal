@@ -27,8 +27,10 @@ import shapely
 from shapely.geometry import shape
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-URL = "https://firms.modaps.eosdis.nasa.gov/data/active_fire/suomi-npp-viirs-c2/csv/SUOMI_VIIRS_C2_Global_7d.csv"
-CELL, MAP_TILE, MAX_OVERVIEW = 10, 100, 15000
+sys.path.insert(0, str(ROOT))
+from app.constants import CELL, MAP_TILE, NRT_URL as URL  # noqa: E402
+
+MAX_OVERVIEW = 15000
 
 
 def source_last_modified() -> str:
@@ -95,10 +97,10 @@ def main():
     for (tx, ty), t in g.groupby(["tx", "ty"]):
         write(out / "tiles" / f"{ty}_{tx}.json", {"days": iso, "rows": t[["di", "xi", "yi", "n"]].astype(int).values.tolist()})
         tiles[f"{ty}_{tx}"] = len(t)
-    write(out / "tiles" / "index.json", {"tiles": tiles})
+    write(out / "tiles" / "index.json", {"tile_cells": MAP_TILE, "tiles": tiles})
 
     # per-country early-warning counts: cells inside the border (Natural Earth) or in the country's own record
-    feats = json.load(open(ROOT / "app" / "resources" / "shapes.geojson"))["features"]
+    feats = json.loads((ROOT / "app" / "resources" / "shapes.geojson").read_text(encoding="utf-8"))["features"]
     ids = [ft["properties"]["id"] for ft in feats]
     tree = shapely.STRtree([shape(ft["geometry"]) for ft in feats])
     uc = g[["yi", "xi"]].drop_duplicates()

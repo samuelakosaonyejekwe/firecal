@@ -1,0 +1,21 @@
+{
+ "k_world": 2.555,
+ "k_terra_world": 7.8105,
+ "countries": [
+  "Brazil",
+  "Cyprus",
+  "Democratic_Republic_of_the_Congo",
+  "Germany",
+  "Ghana",
+  "Niger",
+  "Nigeria",
+  "Togo"
+ ],
+ "fire_cell_days": {
+  "viirs": 14101483,
+  "modis": 5519168,
+  "viirs_pre_drift": 11850689,
+  "terra_pre_drift": 1517275
+ },
+ "computed": "2026-10-01"
+}
