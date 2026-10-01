@@ -62,20 +62,46 @@ def main():
     ap.add_argument("--site", default="site")
     ap.add_argument("--build", default="build")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--keep-from", metavar="SITE_URL",
+                    help="if NASA can't be reached, keep the live files currently published at this site")
     args = ap.parse_args()
     site, build = pathlib.Path(args.site), pathlib.Path(args.build)
     out = site / "data" / "live"
 
-    url, first, size = newest()  # whichever NASA server has the newest data (app/feeds.py)
-    modified = first.isoformat()
-    old = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
-    if old.get("source_bytes") == size:  # the same file, perhaps re-stamped by NASA: keep when it was first seen
-        modified = old["source_last_modified"]
-    if not args.force and old.get("source_last_modified") == modified:
-        print(f"NASA feed unchanged since {modified}; nothing to do")
+    try:
+        url, first, size = newest()  # whichever NASA server has the newest data (app/feeds.py)
+        cells = None if not args.force and _unchanged(out, first, size) else fetch_cells(url)
+    except Exception as e:
+        if not args.keep_from:
+            raise
+        # NASA unreachable: publish everything else with the live fires the website already shows
+        print(f"NASA unreachable ({e.__class__.__name__}: {e}); keeping the published live fires", flush=True)
+        keep_published(args.keep_from, out, build)
+        return
+    if cells is None:
+        print("NASA feed unchanged; nothing to do")
         sys.exit(3)
+    old = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
+    modified = old["source_last_modified"] if old.get("source_bytes") == size else first.isoformat()
+    publish(cells, out, build, modified, size)
 
-    publish(fetch_cells(url), out, build, modified, size)
+
+def _unchanged(out: pathlib.Path, first, size) -> bool:
+    old = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
+    return old.get("source_bytes") == size or old.get("source_last_modified") == first.isoformat()
+
+
+def keep_published(site_url: str, out: pathlib.Path, build: pathlib.Path):
+    """Copy the live files the website currently shows (meta, overview, countries, every tile)."""
+    get = lambda path: json.load(urllib.request.urlopen(site_url.rstrip("/") + "/data/live/" + path, timeout=60))  # noqa: E731
+    for name in ("meta.json", "overview.json", "countries.json", "tiles/index.json"):
+        write(out / name, get(name))
+    for t in get("tiles/index.json")["tiles"]:
+        write(out / "tiles" / f"{t}.json", get(f"tiles/{t}.json"))
+    static = build / "static_cells.parquet"  # the mask comes from the history, not from NASA's live feed
+    if static.exists():
+        mask = duckdb.execute(f"SELECT yi, xi FROM '{static.as_posix()}' ORDER BY yi, xi").df()
+        write(out / "static_cells.json", {"cells": mask[["yi", "xi"]].astype(int).values.ravel().tolist()})
 
 
 def publish(g: pd.DataFrame, out: pathlib.Path, build: pathlib.Path, modified: str, size: int | None = None):

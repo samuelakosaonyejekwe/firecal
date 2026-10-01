@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import datetime as dt
 import email.utils
+import time
 import urllib.request
 
 PATH = "/data/active_fire/suomi-npp-viirs-c2/csv/SUOMI_VIIRS_C2_Global_7d.csv"
@@ -34,9 +35,14 @@ def head(url: str, timeout: int = 60) -> tuple[dt.datetime, int] | None:
         return None
 
 
-def newest(timeout: int = 60) -> tuple[str, dt.datetime, int]:
-    """(url to download, when this data was first published, its size). Raises if no server answers."""
-    seen = [(url, *h) for url in FEEDS if (h := head(url, timeout))]
+def newest(timeout: int = 60, waits=(10, 30)) -> tuple[str, dt.datetime, int]:
+    """(url to download, when this data was first published, its size). Retries after `waits` seconds;
+    raises if no server answers at all."""
+    for wait in (*waits, None):
+        seen = [(url, *h) for url in FEEDS if (h := head(url, timeout))]
+        if seen or wait is None:
+            break
+        time.sleep(wait)  # NASA briefly unreachable: try again
     if not seen:
         raise OSError("no NASA FIRMS server answered")
     url, modified, size = max(seen, key=lambda s: s[1])

@@ -100,3 +100,21 @@ def test_browser_live_data_matches_the_published_files(tmp_path):
         assert js["countries"][cid] == want, cid
         hit += sum(want) > 0
     assert hit >= 6  # the feed really does put fires in these countries
+
+
+def test_nasa_unreachable_keeps_the_published_live_files(tmp_path, monkeypatch):
+    csv, build = tmp_path / "feed.csv", tmp_path / "build"
+    feed(csv, rows=800)
+    build.mkdir()
+    published = tmp_path / "published"
+    live.publish(live.cells_from_csv(csv), published / "data" / "live", build, "2026-10-01T21:54:29+00:00", 123)
+
+    def down(*a, **k):
+        raise OSError("no NASA FIRMS server answered")
+    monkeypatch.setattr(live, "newest", down)
+    monkeypatch.setattr("sys.argv", ["live.py", "--site", str(tmp_path / "site"), "--build", str(build), "--force",
+                                     "--keep-from", published.as_uri()])
+    live.main()
+    got, want = tmp_path / "site" / "data" / "live", published / "data" / "live"
+    names = sorted(p.relative_to(want).as_posix() for p in want.rglob("*.json") if p.name != "static_cells.json")
+    assert names and all(json.loads((got / n).read_text()) == json.loads((want / n).read_text()) for n in names)

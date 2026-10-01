@@ -103,7 +103,8 @@ jobs:
 
       - name: Refresh live fires
         if: steps.done.outputs.cache-hit != 'true'
-        run: python pipeline/live.py --site site --build build --force
+        # if NASA can't be reached, keep the live fires already published and deploy everything else
+        run: python pipeline/live.py --site site --build build --force --keep-from "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
 
       - uses: actions/configure-pages@v6
         if: steps.done.outputs.cache-hit != 'true'

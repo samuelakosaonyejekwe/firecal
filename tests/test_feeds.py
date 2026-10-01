@@ -31,4 +31,4 @@ def test_one_server_down_uses_the_other(monkeypatch):
     assert feeds.newest() == (MIRROR, T, 1000)
     servers(monkeypatch, None, None)
     with pytest.raises(OSError):
-        feeds.newest()
+        feeds.newest(waits=())
