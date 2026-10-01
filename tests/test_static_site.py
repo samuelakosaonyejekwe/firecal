@@ -8,6 +8,7 @@ import pytest
 import pipeline.static_site as ss
 from app.analysis import Store
 from app.constants import BOX_TILE, MODIS_START
+from tests.conftest import make_empty_country
 from tests.test_analysis import RES, make_country
 
 
@@ -16,6 +17,7 @@ def built(tmp_path_factory):
     root = tmp_path_factory.mktemp("data")
     make_country(root, "Nigeria", seed=5)
     make_country(root, "Benin", seed=6)
+    make_empty_country(root, "Maldives")  # published countries can have no fire records at all
     store = Store(root, RES)
     out, build = tmp_path_factory.mktemp("site"), tmp_path_factory.mktemp("build")
     ss.build_app(out, "test")

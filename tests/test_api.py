@@ -10,7 +10,7 @@ def test_health_and_meta():
     assert client.get("/api/health").json()["ok"]
     meta = client.get("/api/meta").json()
     assert len(meta["countries"]) > 200
-    assert [c["id"] for c in meta["countries"] if c["ready"]] == ["Nigeria"]
+    assert [c["id"] for c in meta["countries"] if c["ready"]] == ["Maldives", "Nigeria"]
     assert set(meta["prior"]) == {"k_world", "k_terra_world"}
 
 
@@ -20,6 +20,13 @@ def test_calendar_for_ready_country():
     body = r.json()
     assert abs(body["harmonization"]["k_all"] - 3.0) < 0.1
     assert len(body["monthly"]["values"][0]) == 12
+
+
+def test_country_without_any_fires_gets_an_empty_calendar():
+    r = client.get("/api/calendar?country=Maldives")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total_cell_days"] == 0 and body["harmonization"]["low_counts"]
 
 
 def test_unprocessed_country_and_ocean_box_are_answers_not_errors():
@@ -42,7 +49,7 @@ def test_bad_inputs_are_rejected():
 
 def test_grid_and_locate():
     g = client.get("/api/grid?bbox=-180,-60,180,75").json()
-    assert g["cells"] and g["countries"] == ["Nigeria"]
+    assert g["cells"] and g["countries"] == ["Maldives", "Nigeria"]
     assert client.get("/api/locate?lon=33.4&lat=35.1").json()["country"] == "Cyprus"
     assert client.get("/api/locate?lon=-30&lat=-30").json()["country"] is None
 

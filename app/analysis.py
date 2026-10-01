@@ -142,9 +142,11 @@ class Store:
             for cid in ready:
                 if cid not in self._extent:
                     e = _rows(f"SELECT min(xi), min(yi), max(xi), max(yi), max(d) FROM '{self.path(cid)}'")[0]
-                    self._extent[cid] = [e[0] / CELL, e[1] / CELL, (e[2] + 1) / CELL, (e[3] + 1) / CELL, pd.Timestamp(e[4])]
-            if ready:
-                last = max(self._extent[c][4] for c in ready)
+                    if e[0] is not None:  # a country with no fire records at all has no data extent
+                        self._extent[cid] = [e[0] / CELL, e[1] / CELL, (e[2] + 1) / CELL, (e[3] + 1) / CELL, pd.Timestamp(e[4])]
+            dated = [self._extent[c][4] for c in ready if c in self._extent]
+            if dated:
+                last = max(dated)
                 self.end = pd.Timestamp(last.year, 12, 31)
 
     @property
