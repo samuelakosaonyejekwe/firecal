@@ -2,6 +2,8 @@
 
 **NASA Space Apps Challenge 2026: *Harmonization of MODIS and VIIRS Hot Spots***
 
+**Live app: https://samuelakosaonyejekwe.github.io/firecal/**
+
 Satellites have tracked active fires since 2000, but the record is split between MODIS
 (Terra/Aqua, 1 km, 2000→) and VIIRS (S-NPP, 375 m, 2012→), which count fires differently.
 FireCal harmonizes the two into **one consistent 24-year burning activity calendar for any
@@ -23,7 +25,31 @@ compares with every past year.
 | **Responders / scientists / land managers** | "What this means" plain-language briefing written for each audience |
 | Beyond the brief | Live global fire map, shareable links for every view, CSV export, printable report, open JSON API (`/docs`), installable offline-capable app, light/dark themes, works on phones |
 
-## Run it
+## Two editions, one codebase
+
+| | Website (GitHub Pages) | Local server |
+|---|---|---|
+| Address | https://samuelakosaonyejekwe.github.io/firecal/ | http://127.0.0.1:8765 |
+| Countries | every country published to the `firecal-data` release | any country, processed on demand |
+| Drawn boxes | analysed in the browser from 0.1° fire tiles (up to 20° × 20°) | analysed on the server (up to ~70° × 70°) |
+| Live fires | GitHub checks NASA every 15 min and republishes when NASA posts new data | refreshed every 3 h |
+
+Both use the same harmonization: `app/analysis.py` (Python) and `app/static/engine.js` (browser)
+are checked against each other by `tests/test_engine_parity.py` on every change.
+
+## Keep everything in sync
+
+```bash
+.venv/bin/python pipeline/world.py          # all 208 countries, resumable
+.venv/bin/python pipeline/world.py Chad     # or just some
+```
+
+For each country it uses the cheapest source: this computer → the `firecal-data` release on GitHub
+(a ~5 MB processed file) → NASA (downloaded, processed, then published with your own `gh` login).
+It then asks GitHub to rebuild the website, so **your computer, the repository and the website all
+end up with the same countries**. Raw NASA files are deleted as it goes (keep ~5 GB free).
+
+## Run it locally
 
 ```bash
 ./start.sh        # sets up Python on first run, starts in the background → http://127.0.0.1:8765
@@ -43,9 +69,8 @@ opens it (about 30 s for a small country, a few minutes for Brazil or DR Congo),
 Optional:
 
 ```bash
-.venv/bin/python pipeline/world.py                  # preload all 208 countries (~30 GB download, ~1 GB kept)
-.venv/bin/python pipeline/world.py Chad Kenya        # or just some
 .venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest tests
+.venv/bin/python pipeline/static_site.py --out site --build build   # build the website edition locally
 docker build -t firecal . && docker run -p 8765:8765 -v firecal-data:/data firecal   # deploy anywhere
 ```
 
@@ -68,10 +93,13 @@ and removes the artificial 2012 jump.
 
 ```
 NASA FIRMS yearly country CSVs ──► pipeline/fetch.py ──► pipeline/build.py ──► data/countries/<id>/grid_daily.parquet
-NASA FIRMS 7-day NRT feed (refreshed every 3 h) ──► app/nrt.py
+NASA FIRMS 7-day NRT feed ──► app/nrt.py (server) / pipeline/live.py (website)
                           app/analysis.py (DuckDB + pandas: harmonize, calendar, seasons, anomalies, nowcast)
                           app/main.py (FastAPI: gzip, HTTP caching, on-demand job queue, /docs)
-                          app/static (MapLibre GL + a slim custom ECharts bundle in static/vendor, service worker)
+                          app/static (MapLibre GL + a slim custom ECharts bundle, engine.js, data.js, service worker)
+
+pipeline/world.py ──► GitHub release "firecal-data" ──► .github/workflows/pages.yml
+                      ──► pipeline/static_site.py + pipeline/live.py ──► GitHub Pages
 ```
 
 API: `/api/calendar?country=Kenya` or `?bbox=w,s,e,n`, `/api/nowcast`, `/api/grid`, `/api/live`,

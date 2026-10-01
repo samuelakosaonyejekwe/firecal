@@ -43,24 +43,6 @@ function linfit(xs, ys) { // least-squares slope + mean
   return { slope, mean: my };
 }
 
-class HttpError extends Error {
-  constructor(status, body) { super(body?.detail || `HTTP ${status}`); this.status = status; this.body = body; }
-}
-async function api(url, opts = {}, tries = 3) {
-  for (let i = 0; ; i++) {
-    try {
-      const r = await fetch(url, opts);
-      const body = await r.json().catch(() => null);
-      if (!r.ok) throw new HttpError(r.status, body);
-      return body;
-    } catch (e) {
-      // retry network failures and 5xx, never 4xx (those are answers)
-      if (i + 1 >= tries || (e instanceof HttpError && e.status < 500)) throw e;
-      await new Promise((res) => setTimeout(res, 600 * 2 ** i));
-    }
-  }
-}
-
 function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2600);
@@ -120,7 +102,7 @@ function initMap() {
   map.touchZoomRotate.disableRotation();
 
   map.on("load", () => {
-    map.addSource("countries", { type: "geojson", data: "/world.geojson", promoteId: "id" });
+    map.addSource("countries", { type: "geojson", data: "world.geojson", promoteId: "id" });
     map.addLayer({ id: "countries-fill", type: "fill", source: "countries", paint: { "fill-color": css("--ink"), "fill-opacity": 0.001 } });
     map.addLayer({ id: "countries-hover", type: "fill", source: "countries", filter: ["==", ["get", "id"], ""], paint: { "fill-color": css("--accent"), "fill-opacity": 0.12 } });
     map.addSource("cells", { type: "geojson", data: empty });
@@ -237,10 +219,10 @@ async function refreshLayer() {
   map.setLayoutProperty("cells", "visibility", live ? "none" : "visible");
   map.setLayoutProperty("live", "visibility", live ? "visible" : "none");
   $("histFilters").hidden = live;
-  const q = new URLSearchParams({ bbox: viewBbox().join(",") });
+  const vb = viewBbox().map(Number), zoom = map.getZoom();
   try {
     if (live) {
-      const g = await api(`/api/live?${q}`);
+      const g = await FireData.live(vb, zoom);
       if (token !== refreshLayer.token) return;
       const d = g.cell;
       map.getSource("live").setData({ type: "FeatureCollection", features: g.cells.map(([xi, yi, v]) => ({
@@ -251,13 +233,11 @@ async function refreshLayer() {
       map.setPaintProperty("live", "circle-radius", ["interpolate", ["linear"], ["zoom"], 1, 1.6, 4, 3, 8, 7]);
       map.setPaintProperty("live", "circle-stroke-color", css("--surface"));
       map.setPaintProperty("live", "circle-stroke-width", 0.5);
-      const days = g.days.length ? `${niceDate(g.days[0], false)} – ${niceDate(g.days[g.days.length - 1])}` : "";
+      const days = g.days?.length ? `${niceDate(g.days[0], false)} – ${niceDate(g.days[g.days.length - 1])}` : "";
       $("mapLegend").innerHTML = rampLegend(r.slice(3), "1", `${fmt(max)}+`, `VIIRS detections per cell · ${days} · provisional`);
     } else {
       const y = $("mapYear").value, m = +$("mapMonth").value;
-      if (y !== "all") q.set("year", y);
-      if (m) q.set("month", m);
-      const g = await api(`/api/grid?${q}`);
+      const g = await FireData.grid(vb, y !== "all" ? +y : null, m || null, zoom);
       if (token !== refreshLayer.token) return;
       const d = g.cell;
       map.getSource("cells").setData({ type: "FeatureCollection", features: g.cells.map(([xi, yi, v]) => ({
@@ -268,6 +248,7 @@ async function refreshLayer() {
       map.setPaintProperty("cells", "fill-color", ["interpolate", ["linear"], ["get", "v"], 0, r[0], ...stops]);
       $("mapLegend").innerHTML = g.cells.length
         ? rampLegend(r, "0", `${fmt(max, 1)}+`, `${y === "all" ? "mean fire days per year" : "fire days"} per 0.1° cell (VIIRS-equivalent)`)
+        : FireData.mode === "static" ? `<span>No recorded fires in this view for the selected period.</span>`
         : `<span>No history loaded in this view yet. Click a country to load it, or switch to <b>Live</b> for this week's fires worldwide.</span>`;
     }
   } catch (e) {
@@ -316,10 +297,25 @@ async function loadAOI() {
   banner(null);
   setBusy(true, `<span class="spinner"></span> Analyzing ${esc(name)}…`);
   state.now = null; state.nowLoading = true; renderNowcast();
-  loadNowcast(a, token);
+  if (FireData.mode === "server") loadNowcast(a, token); // static: needs the history first (below)
+  if (a.bbox) {
+    const area = (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]);
+    if (area > FireData.maxBoxDeg2) {
+      setBusy(false); $("results").hidden = true; state.nowLoading = false; renderNowcast();
+      banner(`This box covers ${fmt(area)} square degrees; the largest custom area here is ${fmt(FireData.maxBoxDeg2)} (about ${fmt(Math.sqrt(FireData.maxBoxDeg2))}° × ${fmt(Math.sqrt(FireData.maxBoxDeg2))}°). Draw a smaller box, or pick a country for larger regions.`, "warn");
+      return;
+    }
+  }
+  const progress = (done, total, bytes, totalBytes) => {
+    if (token === state.req && total) setBusy(true, `<span class="spinner"></span> Reading fire records for this area… ${done}/${total} tiles · ${fmt(bytes / 1e6, 1)} of ${fmt(totalBytes / 1e6, 1)} MB`);
+  };
   try {
-    const data = await api(`/api/calendar?${aoiQuery(a)}`);
+    const data = await FireData.calendar(a, progress);
     if (token !== state.req) return;
+    if (data.unavailable) {
+      state.data = null; $("results").hidden = true; setBusy(false); state.nowLoading = false;
+      banner(esc(data.detail), "warn"); loadNowcast(a, token, null); return;
+    }
     if (data.needs_data) {
       if (!data.missing.length) {
         state.data = null; $("results").hidden = true; setBusy(false);
@@ -329,7 +325,8 @@ async function loadAOI() {
     }
     state.data = data;
     showResults();
-    if (data.missing.length) {
+    if (FireData.mode === "static") loadNowcast(a, token, data);
+    if (data.missing.length && FireData.mode === "server") {
       banner(`<b>Partial coverage.</b> This box also covers ${data.missing.map((m) => esc(m.name)).join(", ")}, which ${data.missing.length > 1 ? "haven't" : "hasn't"} been loaded yet.
         <button type="button" id="loadMissing">Load ${data.missing.length > 1 ? "them" : "it"}</button>`, "warn");
       $("loadMissing").onclick = () => prepare(data.missing.map((m) => m.id), token);
@@ -338,7 +335,7 @@ async function loadAOI() {
   } catch (e) {
     if (token !== state.req) return;
     $("results").hidden = true;
-    setBusy(false);
+    setBusy(false); state.nowLoading = false; renderNowcast();
     banner(`Could not analyze this area: ${esc(e.message)} <button type="button" id="retry">Retry</button>`, "error");
     $("retry").onclick = () => { state.data = null; loadAOI(); };
   }
@@ -349,7 +346,7 @@ async function prepare(ids, token) {
   if (!state.data || state.data.aoi && aoiKey(state.data.aoi) !== aoiKey(state.aoi)) { state.data = null; $("results").hidden = true; }
   setBusy(false);
   try {
-    await api("/api/prepare", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ids) }, 2);
+    await FireData.prepare(ids);
   } catch (e) {
     banner(`Could not start loading: ${esc(e.message)}`, "error"); return;
   }
@@ -358,7 +355,7 @@ async function prepare(ids, token) {
   const poll = async () => {
     if (token !== state.req) return;
     let jobs = {};
-    try { jobs = await api("/api/jobs", {}, 2); } catch (_) {}
+    try { jobs = await FireData.jobs(); } catch (_) {}
     const rows = ids.map((id) => {
       const j = jobs[id] || { state: "ready" };
       const pct = j.state === "downloading" && j.total ? Math.round((j.done / j.total) * 90) : j.state === "building" ? 95 : j.state === "ready" ? 100 : 2;
@@ -380,9 +377,9 @@ async function prepare(ids, token) {
   poll();
 }
 
-async function loadNowcast(a, token) {
+async function loadNowcast(a, token, cal) {
   try {
-    const n = await api(`/api/nowcast?${aoiQuery(a)}`, {}, 2);
+    const n = await FireData.nowcast(a, cal);
     if (token !== state.req) return;
     state.now = n.needs_data ? null : n;
   } catch (_) { state.now = null; }
@@ -648,7 +645,9 @@ function renderBriefing() {
       li(`<b>Independent check:</b> Terra-only and Terra+Aqua reconstructions agree within ${h.terra_check_ape ?? "–"}% (2003–2011).`),
       li(`<b>Sample:</b> ${fmt(h.overlap_viirs_cell_days)} VIIRS fire cell-days in the overlap years${h.low_counts ? "; <b>low counts</b>, so the calibration leans on the worldwide prior (k = " + h.k_world + ")" : ""}.`),
       trend != null ? li(`<b>Trend:</b> ${signed(trend, 1)}% per decade in annual fire cell-days (OLS, ${yr.years[0]}–${yr.years[yr.years.length - 1]}).`) : "",
-      li(`<b>Reuse:</b> download the daily series (CSV) or query <code>/api/calendar?${esc(aoiQuery(state.aoi))}</code>. <a href="/docs" target="_blank" rel="noopener">API docs</a>.`),
+      FireData.mode === "server"
+        ? li(`<b>Reuse:</b> download the daily series (CSV) or query <code>api/calendar?${esc(aoiQuery(state.aoi))}</code>. <a href="docs" target="_blank" rel="noopener">API docs</a>.`)
+        : li(`<b>Reuse:</b> download the daily series (CSV)${state.aoi.country ? `, or the full analysis as <a href="data/countries/${encodeURIComponent(state.aoi.country)}.json" target="_blank" rel="noopener">JSON</a>` : " (this area was analysed in your browser from the raw 0.1° fire records)"}. Source code: <a href="https://github.com/samuelakosaonyejekwe/firecal" target="_blank" rel="noopener">GitHub</a>.`),
     ],
   };
   $("briefList").className = `brief ${state.audience}`;
@@ -933,7 +932,7 @@ function locateMe() {
   toast("Finding your location…");
   navigator.geolocation.getCurrentPosition(async (p) => {
     try {
-      const r = await api(`/api/locate?lon=${p.coords.longitude}&lat=${p.coords.latitude}`);
+      const r = await FireData.locate(p.coords.longitude, p.coords.latitude);
       if (r.country) selectAOI({ country: r.country });
       else {
         const { longitude: x, latitude: y } = p.coords;
@@ -947,10 +946,13 @@ function openHelp() { const d = $("help"); if (d.showModal) d.showModal(); else 
 
 // ───────────────────────── wiring ─────────────────────────
 async function loadMeta() {
-  state.meta = await api("/api/meta");
+  state.meta = await FireData.meta();
   state.byId = Object.fromEntries(state.meta.countries.map((c) => [c.id, c]));
   $("countryList").innerHTML = state.meta.countries.map((c) => `<option value="${esc(c.name)}"></option>`).join("");
-  $("readyCount").textContent = `${state.meta.countries.filter((c) => c.ready).length} of ${state.meta.countries.length} countries cached · any country loads on demand`;
+  const nReady = state.meta.countries.filter((c) => c.ready).length;
+  $("readyCount").textContent = FireData.mode === "static"
+    ? `${nReady} of ${state.meta.countries.length} countries available${state.meta.live?.fetched_at ? ` · live fires checked ${new Date(state.meta.live.fetched_at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}` : ""}`
+    : `${nReady} of ${state.meta.countries.length} countries cached · any country loads on demand`;
   styleCountries();
 }
 
@@ -1045,7 +1047,7 @@ async function init() {
     if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("search").focus(); }
   });
 
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("/sw.js").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("sw.js").catch(() => {});
 }
 
 function rethemed() {

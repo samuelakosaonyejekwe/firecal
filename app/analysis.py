@@ -399,9 +399,10 @@ class Store:
             lab = str(a.year) if s0 == 1 else f"{a.year}–{str(a.year + 1)[2:]}"
             row = {"label": lab, "start_year": a.year, "from": a.date().isoformat(), "total": _r(tot, 1)}
             if tot >= 5:
+                # tolerances keep dates independent of floating-point noise (and identical in engine.js)
                 cs = seg.cumsum() / tot
-                st, en = cs.index[cs >= 0.1][0], cs.index[cs >= 0.9][0]
-                pk = seg7.idxmax()
+                st, en = cs.index[cs >= 0.1 - 1e-9][0], cs.index[cs >= 0.9 - 1e-9][0]
+                pk = seg7.round(9).idxmax()
                 row.update(start=st.date().isoformat(), peak=pk.date().isoformat(), end=en.date().isoformat(),
                            start_off=(st - a).days, peak_off=(pk - a).days, end_off=(en - a).days,
                            length=(en - st).days + 1, from_modis=bool(a < VIIRS_START))

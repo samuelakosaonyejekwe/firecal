@@ -1,0 +1,122 @@
+# Publishes the FireCal website (static edition) to GitHub Pages.
+# Runs when code changes, when pipeline/world.py publishes new countries, and every 15 minutes
+# to pick up NASA's latest near-real-time fires. Runs that find nothing new exit in seconds.
+name: Publish website
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  NRT_URL: https://firms.modaps.eosdis.nasa.gov/data/active_fire/suomi-npp-viirs-c2/csv/SUOMI_VIIRS_C2_Global_7d.csv
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fingerprint data, code and NASA feed
+        id: fp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          data=$(gh release view firecal-data --json assets --jq '[.assets[] | .name + "@" + .updatedAt] | sort | join(",")' 2>/dev/null | sha1sum | cut -c1-16)
+          code=$(git ls-files -s app pipeline requirements.txt | sha1sum | cut -c1-16)
+          nasa=$(curl -sfI "$NRT_URL" | tr -d '\r' | awk -F': ' 'tolower($1)=="last-modified"{print $2}' | sha1sum | cut -c1-16)
+          echo "site=site-$data-$code" >> "$GITHUB_OUTPUT"
+          echo "published=published-$data-$code-$nasa" >> "$GITHUB_OUTPUT"
+
+      - name: Already published this exact state?
+        id: done
+        uses: actions/cache/restore@v4
+        with:
+          path: .published
+          key: ${{ steps.fp.outputs.published }}
+          lookup-only: true
+
+      - uses: actions/setup-python@v5
+        if: steps.done.outputs.cache-hit != 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        if: steps.done.outputs.cache-hit != 'true'
+        run: pip install -r requirements.txt
+
+      - name: Restore built site
+        id: site
+        if: steps.done.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            site
+            build
+          key: ${{ steps.fp.outputs.site }}
+
+      - name: Build site from published countries
+        if: steps.done.outputs.cache-hit != 'true' && steps.site.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dl data/countries
+          gh release download firecal-data --dir dl --pattern '*.parquet'
+          for f in dl/*.grid_daily.parquet; do
+            c=$(basename "$f" .grid_daily.parquet); mkdir -p "data/countries/$c"
+            mv "$f" "data/countries/$c/grid_daily.parquet"
+            [ -f "dl/$c.static_cells.parquet" ] && mv "dl/$c.static_cells.parquet" "data/countries/$c/static_cells.parquet"
+          done
+          python pipeline/static_site.py --out site --build build
+
+      - name: Save built site
+        if: steps.done.outputs.cache-hit != 'true' && steps.site.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            site
+            build
+          key: ${{ steps.fp.outputs.site }}
+
+      - name: Refresh live fires
+        if: steps.done.outputs.cache-hit != 'true'
+        run: python pipeline/live.py --site site --build build --force
+
+      - uses: actions/configure-pages@v5
+        if: steps.done.outputs.cache-hit != 'true'
+
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.done.outputs.cache-hit != 'true'
+        with:
+          path: site
+
+      - name: Deploy
+        id: deploy
+        if: steps.done.outputs.cache-hit != 'true'
+        uses: actions/deploy-pages@v4
+
+      - name: Remember this state
+        if: steps.done.outputs.cache-hit != 'true'
+        run: mkdir -p .published && date -u > .published/at
+
+      - uses: actions/cache/save@v4
+        if: steps.done.outputs.cache-hit != 'true'
+        with:
+          path: .published
+          key: ${{ steps.fp.outputs.published }}
