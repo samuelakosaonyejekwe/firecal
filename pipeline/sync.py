@@ -133,11 +133,14 @@ def rebuild(cid: str, store: GitHubStore | None, progress=None) -> tuple[str, bo
     return "rebuilt with new NASA years", False
 
 
-def sync_country(cid: str, store: GitHubStore | None, progress=None) -> tuple[str, bool]:
+def sync_country(cid: str, store: GitHubStore | None, progress=None, skip_published=False) -> tuple[str, bool]:
     """Make this computer (and GitHub, if available) hold the processed country.
 
-    Returns (what happened, whether GitHub changed)."""
+    skip_published: leave countries that GitHub already has alone instead of downloading them (used by
+    the cloud world build, whose machines start empty). Returns (what happened, whether GitHub changed)."""
     have = (DATA / "countries" / cid / FILES[0]).exists()
+    if skip_published and not have and store and store.has(cid):
+        return "already published", False
     if have and store:
         if not store.has(cid):
             store.upload(cid)

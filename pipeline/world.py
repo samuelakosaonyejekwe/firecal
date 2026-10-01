@@ -14,6 +14,7 @@ Resumable: run it again and it carries on where it stopped.
     .venv/bin/python pipeline/world.py --shard 0/8   # one of 8 parallel workers
     .venv/bin/python pipeline/world.py --no-github   # local only
     .venv/bin/python pipeline/world.py --update      # also rebuild countries when NASA publishes a new year
+    .venv/bin/python pipeline/world.py --skip-published  # don't download countries GitHub already has (cloud)
 """
 import json
 import pathlib
@@ -41,12 +42,13 @@ def main():
     if any(a in ("-h", "--help") for a in args):
         print(__doc__)
         return
-    unknown = [a for a in args if a.startswith("-") and a not in ("--no-github", "--shard", "--update")]
+    unknown = [a for a in args if a.startswith("-") and a not in ("--no-github", "--shard", "--update", "--skip-published")]
     if unknown:
         sys.exit(f"unknown option {unknown[0]}; see --help")
-    shard, use_github, update = None, True, "--update" in args
-    if update:
-        args.remove("--update")
+    shard, use_github, update, skip = None, True, "--update" in args, "--skip-published" in args
+    for flag in ("--update", "--skip-published"):
+        if flag in args:
+            args.remove(flag)
     if "--no-github" in args:
         args.remove("--no-github")
         use_github = False
@@ -74,7 +76,7 @@ def main():
     for i, cid in enumerate(ids, 1):
         t = time.time()
         try:
-            how, changed = sync_country(cid, store)
+            how, changed = sync_country(cid, store, skip_published=skip and not update)
             if update and (archive_through(cid) or 0) < latest:
                 how, changed2 = rebuild(cid, store)
                 changed = changed or changed2

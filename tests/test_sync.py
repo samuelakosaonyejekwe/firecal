@@ -122,3 +122,11 @@ def test_neither_builds_from_nasa_and_publishes(env):
 def test_without_github_stays_local(env):
     _, root, built = env
     assert sync.sync_country("Benin", None) == ("built from NASA", False) and built == ["Benin"]
+
+
+def test_cloud_skips_published_countries_without_downloading(env):
+    fake, root, built = env
+    fake("release", "create")
+    (fake.dir / "Mali.grid_daily.parquet").write_bytes(b"mali")
+    assert sync.sync_country("Mali", sync.GitHubStore(), skip_published=True) == ("already published", False)
+    assert not (root / "Mali").exists() and not built

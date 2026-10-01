@@ -53,6 +53,15 @@ the newer copy wins. It then asks GitHub to rebuild the website, so **your compu
 and the website all end up with the same countries**. Raw NASA files are deleted as it goes
 (keep ~5 GB free). Logic and tests: `pipeline/sync.py`, `tests/test_sync.py`.
 
+## In the cloud (no laptop needed)
+
+`.github/workflows/world.yml` runs the same sync on GitHub: 10 parallel workers (5 at a time) build
+every country not yet published, publish it under the owner's name and rebuild the website; a
+monthly run picks up NASA's new yearly archives. It needs one repository secret,
+`FIRECAL_PUBLISH_TOKEN`: a fine-grained personal access token limited to this repository with
+**Contents: read and write** and **Actions: read and write**. Start it from the Actions tab
+("Build world" → Run workflow) or with `gh workflow run world.yml`.
+
 ## Run it locally
 
 ```bash

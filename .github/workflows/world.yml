@@ -1,0 +1,52 @@
+# Builds and maintains every FIRMS country in the cloud, so the website covers the whole world
+# without anyone's laptop. Countries already published are skipped; each new one is downloaded from
+# NASA, harmonized, published to the "firecal-data" release under the owner's name (via the
+# FIRECAL_PUBLISH_TOKEN secret, a fine-grained token limited to this repository), and the website
+# is rebuilt. A monthly run picks up NASA's new yearly archives (--update).
+name: Build world
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 2 * *"   # monthly, off-peak: pick up new NASA yearly archives
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world
+  cancel-in-progress: false
+
+jobs:
+  shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 5        # at most 5 workers download from NASA at once
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    env:
+      GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
+      FIRECAL_DATA: ${{ github.workspace }}/data
+    steps:
+      - name: Check the publishing key
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::The FIRECAL_PUBLISH_TOKEN secret is missing; nothing was built or published."
+            exit 1
+          fi
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Build and publish this shard's countries
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            python pipeline/world.py --shard ${{ matrix.shard }}/10 --update
+          else
+            python pipeline/world.py --shard ${{ matrix.shard }}/10 --skip-published
+          fi
