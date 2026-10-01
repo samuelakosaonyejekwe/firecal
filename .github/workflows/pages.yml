@@ -8,7 +8,8 @@ on:
     branches: [main]
   workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"
+    # off-peak minutes: GitHub delays or drops scheduled runs at the busy :00/:15/:30/:45 marks
+    - cron: "11,26,41,56 * * * *"
 
 permissions:
   contents: read
