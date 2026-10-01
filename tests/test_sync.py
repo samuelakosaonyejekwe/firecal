@@ -122,3 +122,14 @@ def test_neither_builds_from_nasa_and_publishes(env):
 def test_without_github_stays_local(env):
     _, root, built = env
     assert sync.sync_country("Benin", None) == ("built from NASA", False) and built == ["Benin"]
+
+
+def test_downloads_pause_before_a_disk_fills(tmp_path, monkeypatch):
+    """With too little free space nothing is downloaded and the caller gets a clear, resumable error."""
+    import pipeline.fetch as fetch
+    monkeypatch.setattr(fetch, "MIN_FREE_GB", 1e12)  # pretend every disk is nearly full
+    monkeypatch.setattr(fetch, "RAW", tmp_path / "raw")
+    monkeypatch.setattr(fetch.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(AssertionError("network used")))
+    with pytest.raises(fetch.DiskSpaceLow, match="paused"):
+        fetch.fetch_country("Malta")
+    assert not (tmp_path / "raw").exists()

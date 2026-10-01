@@ -22,6 +22,29 @@ SENSORS = {"modis": 2000, "viirs-snpp": 2012}  # sensor -> first archive year
 DATA = pathlib.Path(os.environ.get("FIRECAL_DATA", pathlib.Path(__file__).resolve().parent.parent / "data"))
 RAW = DATA / "raw"
 TIMEOUT = 60  # seconds without data before a download is abandoned and retried
+# Never let downloads fill a disk. Under WSL, Ubuntu's disk is a file on Windows' C: drive, so C:
+# is the real limit; elsewhere the data folder's own disk is.
+MIN_FREE_GB = float(os.environ.get("FIRECAL_MIN_FREE_GB", "3"))
+WINDOWS_C = pathlib.Path("/mnt/c")
+
+
+class DiskSpaceLow(RuntimeError):
+    """Raised before a download when free space is below MIN_FREE_GB (nothing is lost; resume later)."""
+
+
+def free_gb() -> dict:
+    disks = {"data folder": DATA if DATA.exists() else DATA.parent}
+    if WINDOWS_C.is_dir():
+        disks["Windows C:"] = WINDOWS_C
+    return {name: shutil.disk_usage(path).free / 1e9 for name, path in disks.items()}
+
+
+def ensure_space():
+    low = {k: v for k, v in free_gb().items() if v < MIN_FREE_GB}
+    if low:
+        k, v = next(iter(low.items()))
+        raise DiskSpaceLow(f"paused: only {v:.1f} GB free on {k} (FireCal keeps at least {MIN_FREE_GB:g} GB free). "
+                           "Everything done so far is kept; free some space and run the same command again to resume.")
 
 
 def published(sensor: str, year: int, country: str) -> bool:
@@ -40,6 +63,7 @@ def download(sensor: str, year: int, country: str, retries: int = 3) -> str:
     dest = RAW / country / name
     if dest.exists() and dest.stat().st_size > 0:
         return f"cached  {name}"
+    ensure_space()
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
     url = f"{BASE}/{sensor}/{year}/{urllib.parse.quote(name)}"
@@ -74,6 +98,7 @@ def fetch_country(country: str, start: int = 2000, end: int | None = None, progr
     end = end or dt.date.today().year
     jobs = [(s, y) for s, first in SENSORS.items() for y in range(max(first, start), end + 1)]
     out = []
+    ensure_space()
     with cf.ThreadPoolExecutor(max_workers=6) as pool:
         futs = [pool.submit(download, s, y, country) for s, y in jobs]
         for i, f in enumerate(cf.as_completed(futs), 1):
