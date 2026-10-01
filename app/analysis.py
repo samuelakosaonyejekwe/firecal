@@ -330,7 +330,9 @@ class Store:
     def analyze_bytes(self, aoi) -> bytes:
         """Analysis as ready-to-send JSON bytes, served straight from the disk cache when possible."""
         _, ids, _, _, _ = self.resolve(aoi)
-        cache = self.cache_dir / f"cal_{hashlib.sha1((json.dumps(aoi, sort_keys=True) + self.version(ids)).encode()).hexdigest()[:20]}.json"
+        # the worldwide prior changes as countries are added, and small areas lean on it: key on it too
+        key = json.dumps(aoi, sort_keys=True) + self.version(ids) + "%.6f/%.6f" % self.prior()
+        cache = self.cache_dir / f"cal_{hashlib.sha1(key.encode()).hexdigest()[:20]}.json"
         if cache.exists():
             return cache.read_bytes()
         raw = json.dumps(self._analyze(aoi), separators=(",", ":")).encode()
