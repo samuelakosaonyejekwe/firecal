@@ -8,6 +8,7 @@ the repository has diverged from GitHub.
 
     .venv/bin/python pipeline/finalize.py            # recompute + commit + push when due
     .venv/bin/python pipeline/finalize.py --dry-run  # only report what it would do
+    .venv/bin/python pipeline/finalize.py --complete # every country is in: recompute even below the 20% step
 """
 from __future__ import annotations
 
@@ -33,10 +34,11 @@ def git(*args, check=True) -> str:
                           timeout=120).stdout.strip()
 
 
-def due(available: list[str]) -> bool:
+def due(available: list[str], complete=False) -> bool:
+    """Recompute after GROWTH more countries, and once more when the world is complete (nothing left to build)."""
     current = set(json.loads(PRIOR_FILE.read_text())["countries"])
     new = set(available) - current
-    return len(new) >= MIN_NEW and len(available) >= len(current) * (1 + GROWTH)
+    return len(new) >= MIN_NEW and (complete or len(available) >= len(current) * (1 + GROWTH))
 
 
 def ensure_identity():
@@ -46,10 +48,10 @@ def ensure_identity():
         git("config", "user.email", git("log", "-1", "--format=%ae"))
 
 
-def update_prior(dry_run=False, push=True) -> str:
+def update_prior(dry_run=False, push=True, complete=False) -> str:
     files = sorted(DATA.glob("countries/*/grid_daily.parquet"))
     available = sorted(f.parent.name for f in files)
-    if not files or not due(available):
+    if not files or not due(available, complete):
         return f"calibration prior is up to date ({len(json.loads(PRIOR_FILE.read_text())['countries'])} countries; {len(available)} available)"
     if dry_run:
         return f"would recompute the calibration prior from {len(available)} countries"
@@ -59,7 +61,7 @@ def update_prior(dry_run=False, push=True) -> str:
             if subprocess.run(["git", "merge", "-q", "--ff-only", "origin/main"], cwd=ROOT, capture_output=True,
                               env=GIT_ENV, timeout=120).returncode:
                 return "skipped: this copy has diverged from GitHub; the calibration prior was left unchanged"
-        if not due(available):  # someone else already updated it
+        if not due(available, complete):  # someone else already updated it
             return "calibration prior was already updated on GitHub"
     out = prior.compute(files)
     PRIOR_FILE.write_text(json.dumps(out, indent=1) + "\n")
@@ -78,4 +80,4 @@ def update_prior(dry_run=False, push=True) -> str:
 
 
 if __name__ == "__main__":
-    print(update_prior(dry_run="--dry-run" in sys.argv))
+    print(update_prior(dry_run="--dry-run" in sys.argv, complete="--complete" in sys.argv))

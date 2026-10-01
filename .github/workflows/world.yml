@@ -91,14 +91,17 @@ jobs:
           for f in dl/*.grid_daily.parquet; do
             c=$(basename "$f" .grid_daily.parquet); mkdir -p "data/countries/$c"; mv "$f" "data/countries/$c/grid_daily.parquet"
           done
+      - name: Find countries still missing
+        run: python pipeline/world.py --missing | tee missing.txt
       - name: Update the worldwide calibration prior if due
-        run: python pipeline/finalize.py
+        run: |
+          # once nothing is missing, recompute from the whole world even below the 20% step
+          if grep -q "^0 countries" missing.txt; then python pipeline/finalize.py --complete; else python pipeline/finalize.py; fi
       - name: Retry countries that are still missing
         if: ${{ !cancelled() }}   # a run you cancel by hand is not retried
         env:
           ATTEMPT: ${{ inputs.attempt || '1' }}
         run: |
-          python pipeline/world.py --missing | tee missing.txt
           if ! grep -q "^0 countries" missing.txt; then
             if [ "$ATTEMPT" -lt 3 ]; then
               gh workflow run world.yml -f attempt=$((ATTEMPT + 1))

@@ -123,7 +123,7 @@ def main():
         print("→ asked GitHub to rebuild the website" if store.rebuild_site() else "(could not trigger the website rebuild)", flush=True)
     print(f"done; {published} published to GitHub, {len(failed)} failed: {failed}")
     if store and not shard:  # a full local run: keep the worldwide calibration in step with the world
-        print(update_prior(), flush=True)
+        print(update_prior(complete=not failed and len(ids) == len(known)), flush=True)
     if offline >= OFFLINE_STOP:
         sys.exit(3)
 

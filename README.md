@@ -56,7 +56,7 @@ and the website all end up with the same countries**. Raw NASA files are deleted
 Two things happen on their own as the world fills in: countries NASA has no usable archive for are
 recorded once (`unavailable.json` in the release), skipped by later runs and explained in the app;
 and once at least 20% more countries are available than the worldwide calibration prior was computed
-from, `pipeline/finalize.py` recomputes `app/resources/prior.json`, commits only that file under the
+from (and once more when every country is in), `pipeline/finalize.py` recomputes `app/resources/prior.json`, commits only that file under the
 owner's name and pushes it, which rebuilds the website (it skips if the local copy has diverged).
 
 ## In the cloud (no laptop needed)

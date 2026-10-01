@@ -1,4 +1,4 @@
-"""pipeline/finalize.py: the worldwide prior is recomputed only once the world has grown enough."""
+"""pipeline/finalize.py: the worldwide prior is recomputed once the world has grown enough, and when it is complete."""
 import json
 
 import pipeline.finalize as fin
@@ -29,3 +29,11 @@ def test_recomputed_when_due_without_pushing(tmp_path, monkeypatch):
     assert "recomputed from 7 countries" in msg and out["countries"] == sorted(names)
     assert abs(out["k_world"] - 3.0) < 0.05  # synthetic VIIRS = 3 × MODIS
     assert "up to date" in fin.update_prior(push=False)  # and then it's settled
+
+
+def test_complete_world_is_recomputed_below_the_growth_step(tmp_path, monkeypatch):
+    world = sorted(c["id"] for c in json.loads((fin.ROOT / "app" / "resources" / "countries.json").read_text()))
+    listed = [c for c in world if c not in ("Nigeria", "Ghana", "Togo", "Benin", "Niger")][:30]
+    setup(tmp_path, monkeypatch, listed, listed + ["Nigeria", "Ghana", "Togo", "Benin", "Niger"])
+    assert "up to date" in fin.update_prior(dry_run=True)                 # 5 more of 30 is under 20%...
+    assert "would recompute" in fin.update_prior(dry_run=True, complete=True)  # ...but the world is complete
