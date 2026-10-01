@@ -15,6 +15,10 @@ Resumable: run it again and it carries on where it stopped.
     .venv/bin/python pipeline/world.py --no-github   # local only
     .venv/bin/python pipeline/world.py --update      # also rebuild countries when NASA publishes a new year
     .venv/bin/python pipeline/world.py --skip-published  # don't download countries GitHub already has (cloud)
+    .venv/bin/python pipeline/world.py --missing     # list countries not yet published (nothing is changed)
+
+If NASA can't be reached for several countries in a row (internet down), it stops early with exit
+code 3 instead of failing every remaining country; run it again later to continue.
 """
 import json
 import pathlib
@@ -29,6 +33,8 @@ from pipeline.sync import PERMANENT, GitHubStore, archive_through, github_availa
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PUBLISH_EVERY = 10         # rebuild the website after this many newly published countries
+NETWORK = ("urlopen error", "timed out", "Network is unreachable", "Connection reset", "Temporary failure")
+OFFLINE_STOP = 3           # consecutive countries failing on the network before stopping early
 PRIORITY = ["Democratic_Republic_of_the_Congo", "Brazil", "Russian_Federation", "Angola", "Australia", "Zambia",
             "Mozambique", "Central_African_Republic", "South_Sudan", "United_States", "Argentina", "India",
             "Indonesia", "Canada", "Bolivia", "Tanzania", "Sudan", "Nigeria", "Chad", "Kazakhstan"]
@@ -43,6 +49,10 @@ def main():
     args = sys.argv[1:]
     if any(a in ("-h", "--help") for a in args):
         print(__doc__)
+        return
+    if args == ["--missing"]:
+        gone = missing()
+        print(f"{len(gone)} countries not yet published" + (f": {' '.join(gone)}" if gone else ""))
         return
     unknown = [a for a in args if a.startswith("-") and a not in ("--no-github", "--shard", "--update", "--skip-published")]
     if unknown:
@@ -74,7 +84,7 @@ def main():
     latest = latest_archive_year() if update else None
     if update:
         print(f"NASA's latest yearly archive: {latest}", flush=True)
-    failed, published, pending = [], 0, 0
+    failed, published, pending, offline = [], 0, 0, 0
     local_list = DATA / "unavailable.json"  # local copy for the local server
     unavailable = store.unavailable() if store else (json.loads(local_list.read_text()) if local_list.exists() else {})
     if store:
@@ -92,6 +102,7 @@ def main():
                 changed = changed or changed2
             published += changed
             pending += changed
+            offline = 0
             print(f"[{i}/{len(ids)}] {cid}: {how} ({time.time() - t:.0f}s)", flush=True)
         except Exception as e:  # tiny territories may have no VIIRS archive at all
             failed.append(cid)
@@ -100,6 +111,11 @@ def main():
                 store.mark_unavailable(cid, str(e))
                 unavailable[cid] = str(e)
                 local_list.write_text(json.dumps(unavailable, indent=1, sort_keys=True))
+            offline = offline + 1 if any(p in str(e) for p in NETWORK) else 0
+            if offline >= OFFLINE_STOP:  # every download fails: this machine can't reach NASA, so stop instead of
+                print(f"stopping: NASA unreachable for {offline} countries in a row; "  # failing for hours
+                      "run again later to continue (finished countries are kept)", flush=True)
+                break
         if store and pending >= PUBLISH_EVERY:
             print("  → asking GitHub to rebuild the website" if store.rebuild_site() else "  (could not trigger the website rebuild)", flush=True)
             pending = 0
@@ -108,6 +124,16 @@ def main():
     print(f"done; {published} published to GitHub, {len(failed)} failed: {failed}")
     if store and not shard:  # a full local run: keep the worldwide calibration in step with the world
         print(update_prior(), flush=True)
+    if offline >= OFFLINE_STOP:
+        sys.exit(3)
+
+
+def missing() -> list[str]:
+    """Countries neither published nor known to be unavailable from NASA (what a retry would still build)."""
+    store = GitHubStore()
+    gone = store.unavailable()
+    ids = [c["id"] for c in json.loads((ROOT / "app" / "resources" / "countries.json").read_text(encoding="utf-8"))]
+    return [c for c in ids if c not in gone and not store.has(c)]
 
 
 if __name__ == "__main__":

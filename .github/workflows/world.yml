@@ -2,11 +2,17 @@
 # without anyone's laptop. Countries already published are skipped; each new one is downloaded from
 # NASA, harmonized, published to the "firecal-data" release under the owner's name (via the
 # FIRECAL_PUBLISH_TOKEN secret, a fine-grained token limited to this repository), and the website
-# is rebuilt. A monthly run picks up NASA's new yearly archives (--update).
+# is rebuilt. A monthly run picks up NASA's new yearly archives (--update). If countries are still
+# missing afterwards (e.g. a machine lost its connection to NASA), the run starts the next attempt
+# by itself on fresh machines, up to 3 attempts.
 name: Build world
 
 on:
   workflow_dispatch:
+    inputs:
+      attempt:
+        description: "Retry number (set automatically when a run starts the next one)"
+        default: "1"
   schedule:
     - cron: "17 3 2 * *"   # monthly, off-peak: pick up new NASA yearly archives
 
@@ -87,3 +93,17 @@ jobs:
           done
       - name: Update the worldwide calibration prior if due
         run: python pipeline/finalize.py
+      - name: Retry countries that are still missing
+        if: ${{ !cancelled() }}   # a run you cancel by hand is not retried
+        env:
+          ATTEMPT: ${{ inputs.attempt || '1' }}
+        run: |
+          python pipeline/world.py --missing | tee missing.txt
+          if ! grep -q "^0 countries" missing.txt; then
+            if [ "$ATTEMPT" -lt 3 ]; then
+              gh workflow run world.yml -f attempt=$((ATTEMPT + 1))
+              echo "started attempt $((ATTEMPT + 1)) for the missing countries"
+            else
+              echo "::warning::still missing after $ATTEMPT attempts; next month's run (or the local preload) will add them"
+            fi
+          fi

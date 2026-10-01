@@ -64,7 +64,9 @@ owner's name and pushes it, which rebuilds the website (it skips if the local co
 `.github/workflows/world.yml` runs the same sync on GitHub: 10 parallel workers (5 at a time) build
 every country not yet published, publish it under the owner's name and rebuild the website; a
 monthly run picks up NASA's new yearly archives, and a final step updates the calibration prior
-when due. It needs one repository secret,
+when due. A worker that can't reach NASA stops early, and if any country is still missing the run
+starts itself again on fresh machines (up to 3 attempts; `python pipeline/world.py --missing` lists
+what is left). It needs one repository secret,
 `FIRECAL_PUBLISH_TOKEN`: a fine-grained personal access token limited to this repository with
 **Contents: read and write** and **Actions: read and write**. Start it from the Actions tab
 ("Build world" → Run workflow) or with `gh workflow run world.yml`.
