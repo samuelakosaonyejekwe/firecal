@@ -15,8 +15,15 @@ def world(monkeypatch):
     monkeypatch.setattr(keeper, "website_url", lambda: "https://example.github.io/firecal/")
     monkeypatch.setattr(keeper, "website_updated", lambda url: state["site"])
     monkeypatch.setattr(keeper, "build_in_flight", lambda: state["in_flight"])
+    state["workflow_state"], state["enabled"] = "active", 0
 
     def fake_gh(*args):
+        if args[0] == "api":
+            return '{"state": "%s"}' % state["workflow_state"]
+        if args[:2] == ("workflow", "enable"):
+            state["enabled"] += 1
+            state["workflow_state"] = "active"
+            return ""
         assert args[:2] == ("workflow", "run")
         state["dispatched"] += 1
     monkeypatch.setattr(keeper, "gh", fake_gh)
@@ -57,3 +64,11 @@ def test_unreadable_site_is_rebuilt(world):
 def test_keeper_stays_off_without_github(monkeypatch):
     monkeypatch.setenv("FIRECAL_NO_GITHUB", "1")
     assert keeper.start(log=lambda m: None) is False
+
+
+def test_schedule_disabled_by_github_is_switched_back_on(world):
+    world["workflow_state"] = "disabled_inactivity"
+    msg, _ = keeper.check_once()
+    assert world["enabled"] == 1 and "re-enabled" in msg and "current" in msg
+    msg, _ = keeper.check_once()
+    assert world["enabled"] == 1 and "re-enabled" not in msg

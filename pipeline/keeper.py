@@ -4,7 +4,8 @@ GitHub runs scheduled workflows on a best-effort basis (they are delayed or skip
 busy or degraded). While the local FireCal server is running, this keeper checks every 15 minutes
 whether NASA has published live data that the website doesn't show yet. If the website is more than
 GRACE minutes behind and no website build is already queued or running, it asks GitHub to rebuild
-the site, with your own `gh` login. It does nothing when the site is current.
+the site, with your own `gh` login. It does nothing when the site is current. It also switches the
+schedule back on if GitHub has disabled it (GitHub does that after 60 days without repository activity).
 
 Run once by hand:  .venv/bin/python pipeline/keeper.py
 """
@@ -51,8 +52,23 @@ def build_in_flight() -> bool:
     return any(r["status"] in ("queued", "in_progress", "waiting", "pending", "requested") for r in runs)
 
 
+def ensure_schedule_enabled() -> str | None:
+    """GitHub disables scheduled workflows after 60 days without repository activity; switch it back on."""
+    state = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/actions/workflows/{WORKFLOW}"))["state"]
+    if state != "active":
+        gh("workflow", "enable", WORKFLOW)
+        return f"website schedule was {state}; re-enabled it"
+    return None
+
+
 def check_once(last_request: dt.datetime | None = None) -> tuple[str, dt.datetime | None]:
     """One check. Returns (what happened, time of the last rebuild request)."""
+    fixed = ensure_schedule_enabled()
+    msg, last = _check_freshness(last_request)
+    return (f"{fixed}; {msg}" if fixed else msg), last
+
+
+def _check_freshness(last_request: dt.datetime | None) -> tuple[str, dt.datetime | None]:
     now = dt.datetime.now(dt.timezone.utc)
     nasa = nasa_updated()
     site = website_updated(website_url())
