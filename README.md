@@ -32,7 +32,7 @@ compares with every past year.
 | Address | https://samuelakosaonyejekwe.github.io/firecal/ | http://127.0.0.1:8765 |
 | Countries | every country published to the `firecal-data` release | any country on demand: fetched from GitHub if published, otherwise built from NASA and published |
 | Drawn boxes | analysed in the browser from 0.1° fire tiles (up to 20° × 20°) | analysed on the server (up to ~70° × 70°) |
-| Live fires | A cloud watcher (`.github/workflows/live.yml`) checks NASA every 5 min around the clock and rebuilds the site when NASA posts new data, handing over to its own successor every ~5.5 h, so neither a laptop nor GitHub's best-effort schedule is needed; the schedule, every website build and the local server (`pipeline/keeper.py`) restart it if it ever stops, and the app flags live data older than 6 h | refreshed every 3 h |
+| Live fires | A cloud watcher (`.github/workflows/live.yml`) checks NASA every 5 min around the clock and rebuilds the site when NASA posts new data, handing over to its own successor every ~5.5 h, so neither a laptop nor GitHub's best-effort schedule is needed; the schedule, every website build and the local server (`pipeline/keeper.py`) restart it if it ever stops. If the published copy is still more than an hour behind NASA (e.g. GitHub Actions is down), visitors' browsers read NASA's own 7-day file from the FIRMS mirror that allows browser access and build the same live data with the same rules (`app/static/live.js`, parity-tested against `pipeline/live.py`), showing the published copy until it is ready; the app flags live data more than 6 h behind NASA | refreshed every 3 h |
 
 Both use the same harmonization: `app/analysis.py` (Python) and `app/static/engine.js` (browser)
 are checked against each other by `tests/test_engine_parity.py` on every change.
@@ -129,7 +129,7 @@ NASA FIRMS yearly country CSVs ──► pipeline/fetch.py ──► pipeline/bu
 NASA FIRMS 7-day NRT feed ──► app/nrt.py (server) / pipeline/live.py (website)
                           app/analysis.py (DuckDB + pandas: harmonize, calendar, seasons, anomalies, nowcast)
                           app/main.py (FastAPI: gzip, HTTP caching, on-demand job queue, /docs)
-                          app/static (MapLibre GL + a slim custom ECharts bundle, engine.js, data.js, service worker)
+                          app/static (MapLibre GL + a slim custom ECharts bundle, engine.js, geo.js, live.js, data.js, service worker)
 
 pipeline/world.py + pipeline/sync.py ──► GitHub release "firecal-data" ──► .github/workflows/pages.yml
                       ──► tests ──► pipeline/static_site.py + pipeline/live.py ──► GitHub Pages

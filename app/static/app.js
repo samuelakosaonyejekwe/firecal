@@ -561,8 +561,9 @@ function renderNowcast() {
   $("nowCard").hidden = false; syncNav();
   const d0 = n.days[0], d1 = n.days[n.days.length - 1];
   $("nowSub").textContent = `${niceDate(d0, false)} – ${niceDate(d1)} · provisional VIIRS near-real-time · updated ${n.fetched_at ? new Date(n.fetched_at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }) : "–"}`;
-  // say so plainly if the live data is old (e.g. the hosting's scheduled refresh is delayed)
-  const ageH = n.fetched_at ? (Date.now() - new Date(n.fetched_at)) / 36e5 : 0;
+  if (n.direct_from_nasa) $("nowSub").insertAdjacentHTML("beforeend", ` <span class="muted">· read directly from NASA (the published copy is behind)</span>`);
+  // say so plainly if the live data is old (NASA's own update time, else when it was fetched)
+  const since = n.source_updated || n.fetched_at, ageH = since ? (Date.now() - new Date(since)) / 36e5 : 0;
   if (ageH > 6) $("nowSub").insertAdjacentHTML("beforeend", ` <span class="stale">· ⚠ not refreshed for ${fmt(ageH)} hours; this week's figures may be out of date</span>`);
   const st = nowStatus(n);
   $("nowCard").style.setProperty("--now-c", st ? st.color : css("--accent"));
@@ -981,12 +982,24 @@ async function loadMeta() {
   state.meta = await FireData.meta();
   state.byId = Object.fromEntries(state.meta.countries.map((c) => [c.id, c]));
   $("countryList").innerHTML = state.meta.countries.map((c) => `<option value="${esc(c.name)}"></option>`).join("");
+  renderReadyCount();
+  styleCountries();
+}
+
+function renderReadyCount() {
   const nReady = state.meta.countries.filter((c) => c.ready).length;
   $("readyCount").textContent = FireData.mode === "static"
     ? `${nReady} of ${state.meta.countries.length} countries available${state.meta.live?.fetched_at ? ` · live fires checked ${new Date(state.meta.live.fetched_at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}` : ""}`
     : `${nReady} of ${state.meta.countries.length} countries cached · any country loads on demand`;
-  styleCountries();
 }
+
+// website: when the browser has read newer live fires straight from NASA, redraw what shows them
+FireData.onLiveUpdate?.((live) => {
+  if (!state.meta) return;
+  state.meta.live = live; renderReadyCount();
+  if (state.data && state.aoi) loadNowcast(state.aoi, state.req, state.data);
+  if (state.layer === "live") refreshLayer();
+});
 
 async function init() {
   const t = store.get("firecal-theme");

@@ -5,6 +5,8 @@ Writes site/data/live/:
   overview.json        world map layer (≤15,000 cells)
   tiles/<ty>_<tx>.json 10° tiles of every live fire cell-day (0.1°), for the map and drawn boxes
   countries.json       fire cell-days per complete day for every country (early warning)
+  static_cells.json    industrial-heat cells [yi, xi, yi, xi, …], so browsers can apply the same mask
+                       when they read NASA's file directly (app/static/live.js)
 
 Cells that are historically dominated by industrial heat (gas flares, plants) are excluded.
 Exit code 3 means NASA hasn't published anything new since the last run (nothing to deploy).
@@ -42,12 +44,17 @@ def fetch_cells() -> pd.DataFrame:
     with tempfile.TemporaryDirectory() as tmp:
         csv = pathlib.Path(tmp) / "feed.csv"
         urllib.request.urlretrieve(URL, csv)
-        with duckdb.connect() as con:
-            return con.execute(f"""
-                SELECT CAST(acq_date AS DATE) AS d, CAST(floor(latitude * {CELL}) AS INTEGER) AS yi,
-                       CAST(floor(longitude * {CELL}) AS INTEGER) AS xi, count(*) AS n, sum(frp) AS frp
-                FROM read_csv('{csv.as_posix()}', types = {{'confidence': 'VARCHAR'}})
-                WHERE confidence IN ('nominal', 'high', 'n', 'h') GROUP BY ALL""").df()
+        return cells_from_csv(csv)
+
+
+def cells_from_csv(csv: pathlib.Path) -> pd.DataFrame:
+    """NASA's CSV -> fire cell-days (detections and FRP per 0.1° cell and day), nominal/high confidence."""
+    with duckdb.connect() as con:
+        return con.execute(f"""
+            SELECT CAST(acq_date AS DATE) AS d, CAST(floor(latitude * {CELL}) AS INTEGER) AS yi,
+                   CAST(floor(longitude * {CELL}) AS INTEGER) AS xi, count(*) AS n, sum(frp) AS frp
+            FROM read_csv('{csv.as_posix()}', types = {{'confidence': 'VARCHAR'}})
+            WHERE confidence IN ('nominal', 'high', 'n', 'h') GROUP BY ALL""").df()
 
 
 def write(path: pathlib.Path, obj):
@@ -70,11 +77,16 @@ def main():
         print(f"NASA feed unchanged since {modified}; nothing to do")
         sys.exit(3)
 
-    g = fetch_cells()
+    publish(fetch_cells(), out, build, modified)
+
+
+def publish(g: pd.DataFrame, out: pathlib.Path, build: pathlib.Path, modified: str):
+    """Write the live files from fire cell-days (see the module docstring)."""
     g["d"] = pd.to_datetime(g["d"])
     static = build / "static_cells.parquet"
     if static.exists():  # drop gas flares / industrial heat (FIRMS NRT has no 'type' column)
-        mask = duckdb.execute(f"SELECT yi, xi FROM '{static.as_posix()}'").df()
+        mask = duckdb.execute(f"SELECT yi, xi FROM '{static.as_posix()}' ORDER BY yi, xi").df()
+        write(out / "static_cells.json", {"cells": mask[["yi", "xi"]].astype(int).values.ravel().tolist()})  # for live.js
         g = g.merge(mask.assign(_static=1), on=["yi", "xi"], how="left")
         g = g[g._static.isna()].drop(columns="_static")
     days = sorted(g.d.unique())

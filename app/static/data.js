@@ -111,6 +111,44 @@
     return S;
   }
 
+  // Live fires: the published copy, shown at once. Meanwhile, if that copy is more than an hour behind
+  // NASA (e.g. GitHub Actions is down), this browser reads NASA's own file with live.js (same rules)
+  // and switches to it, telling the app through onLiveUpdate so it can redraw.
+  const BEHIND_MS = 60 * 60 * 1000, liveListeners = [];
+  let direct = null;
+  async function upgradeFromNasa(lm) {
+    if (!window.FireLive || navigator.connection?.saveData) return null;
+    const nasa = await FireLive.nasaModified();
+    if (!nasa || (lm && nasa - new Date(lm.source_last_modified) <= BEHIND_MS)) return null;
+    const [mask, ix] = await Promise.all([
+      fetchJSON("data/live/static_cells.json"), // without the gas-flare mask, keep the published copy
+      fetchJSON("data/live/tiles/index.json", { cache: "no-cache" }).catch(() => ({ tile_cells: 100 }))]);
+    return { ...FireLive.build(await FireLive.fetchParsed(mask.cells), ix.tile_cells, nasa.toISOString()), direct: true };
+  }
+  const liveSource = () => direct ? Promise.resolve(direct) : once("livesrc", async () => {
+    const lm = await fetchJSON("data/live/meta.json", { cache: "no-cache" }, 2).catch(() => null);
+    const up = once("liveup", () => upgradeFromNasa(lm)).then((d) => {
+      if (d) { direct = d; for (const f of liveListeners) try { f(d.meta); } catch (e) { console.error(e); } }
+      return d;
+    }).catch((e) => { console.warn("FireCal: reading live fires from NASA failed; showing the published copy", e); return null; });
+    if (lm) return { meta: lm, direct: false };
+    const d = await up; // no published copy at all: wait for NASA
+    if (!d) throw new Error("live data unavailable");
+    return d;
+  });
+  const liveOverview = async () => { const s = await liveSource(); return s.direct ? s.overview : once("liveov", () => fetchJSON("data/live/overview.json", { cache: "no-cache" })); };
+  const liveIndex = async () => { const s = await liveSource(); return s.direct ? s.index : once("liveindex", () => fetchJSON("data/live/tiles/index.json", { cache: "no-cache" })); };
+  const liveTile = async (k) => { const s = await liveSource(); return s.direct ? s.tiles[k] : once(`live:${k}`, () => fetchJSON(`data/live/tiles/${k}.json`, { cache: "no-cache" })); };
+  async function liveCountry(id, days) {
+    const s = await liveSource();
+    if (s.direct) return once(`livec:${id}`, async () => {
+      const feature = (await shapes()).features.find((f) => f.properties.id === id);
+      return FireLive.countryCells(s, feature, META.countries.find((c) => c.id === id)?.extent);
+    });
+    const lc = await once("livecountries", () => fetchJSON("data/live/countries.json", { cache: "no-cache" }));
+    return lc.countries[id]?.cells || days.map(() => 0);
+  }
+
   const Static = {
     mode: "static",
     maxBoxDeg2: Infinity, // set from data/meta.json
@@ -143,21 +181,17 @@
       });
     },
     async nowcast(a, cal) {
-      const lm = await once("livemeta", () => fetchJSON("data/live/meta.json", { cache: "no-cache" }));
-      const days = lm.complete_days;
+      const src = await liveSource(), lm = src.meta, days = lm.complete_days;
       let cells;
-      if (a.country) {
-        const lc = await once("livecountries", () => fetchJSON("data/live/countries.json", { cache: "no-cache" }));
-        cells = lc.countries[a.country]?.cells || days.map(() => 0);
-      } else {
+      if (a.country) cells = await liveCountry(a.country, days);
+      else {
         const { y0, y1, x0, x1 } = cellBounds(a.bbox);
-        const ix = await once("liveindex", () => fetchJSON("data/live/tiles/index.json", { cache: "no-cache" }));
-        const want = [], T = ix.tile_cells;
+        const ix = await liveIndex(), want = [], T = ix.tile_cells;
         for (let ty = Math.floor(y0 / T); ty <= Math.floor(y1 / T); ty++)
           for (let tx = Math.floor(x0 / T); tx <= Math.floor(x1 / T); tx++)
             if (ix.tiles[`${ty}_${tx}`] != null) want.push(`${ty}_${tx}`);
         const counts = new Map(days.map((d) => [d, 0]));
-        for (const t of await Promise.all(want.map((k) => once(`live:${k}`, () => fetchJSON(`data/live/tiles/${k}.json`, { cache: "no-cache" }))))) {
+        for (const t of await Promise.all(want.map(liveTile))) {
           for (const [di, xi, yi] of t.rows) {
             const d = t.days[di];
             if (counts.has(d) && yi >= y0 && yi <= y1 && xi >= x0 && xi <= x1) counts.set(d, counts.get(d) + 1);
@@ -166,7 +200,8 @@
         cells = days.map((d) => counts.get(d));
       }
       const h = cal?.daily?.h || null;
-      return { ...FireEngine.nowcast(days, cells, h, +META.range.end.slice(0, 4)), fetched_at: lm.fetched_at, source_updated: lm.source_last_modified };
+      return { ...FireEngine.nowcast(days, cells, h, +META.range.end.slice(0, 4)), fetched_at: lm.fetched_at,
+               source_updated: lm.source_last_modified, direct_from_nasa: src.direct };
     },
     async grid(bbox, year, month, zoom) {
       const key = year ? `y${year}` : month ? `m${String(month).padStart(2, "0")}` : "all";
@@ -179,17 +214,14 @@
       return { cell: 0.1, max: ix.max, cells: parts.flatMap((p) => p.cells) };
     },
     async live(bbox, zoom) {
-      const lm = await once("livemeta", () => fetchJSON("data/live/meta.json", { cache: "no-cache" }));
-      if (zoom < 4) {
-        const ov = await once("liveov", () => fetchJSON("data/live/overview.json", { cache: "no-cache" }));
-        return { ...ov, fetched_at: lm.fetched_at };
-      }
-      const ix = await once("liveindex", () => fetchJSON("data/live/tiles/index.json", { cache: "no-cache" }));
+      const lm = (await liveSource()).meta;
+      if (zoom < 4) return { ...(await liveOverview()), fetched_at: lm.fetched_at };
+      const ix = await liveIndex();
       const { y0, y1, x0, x1 } = cellBounds(bbox), want = [], T = ix.tile_cells;
       for (let ty = Math.floor(y0 / T); ty <= Math.floor(y1 / T); ty++)
         for (let tx = Math.floor(x0 / T); tx <= Math.floor(x1 / T); tx++) if (ix.tiles[`${ty}_${tx}`] != null) want.push(`${ty}_${tx}`);
       const sums = new Map();
-      for (const t of await Promise.all(want.map((k) => once(`live:${k}`, () => fetchJSON(`data/live/tiles/${k}.json`, { cache: "no-cache" })))))
+      for (const t of await Promise.all(want.map(liveTile)))
         for (const [, xi, yi, n] of t.rows) { const k = `${xi},${yi}`; sums.set(k, (sums.get(k) || 0) + n); }
       const cells = [...sums].map(([k, v]) => { const [xi, yi] = k.split(",").map(Number); return [xi, yi, v]; });
       const vals = cells.map((c) => c[2]).sort((a, b) => a - b);
@@ -202,6 +234,7 @@
     },
     prepare: async () => ({}),
     jobs: async () => ({}),
+    onLiveUpdate(f) { liveListeners.push(f); }, // called with the new live meta when NASA's own data replaces the published copy
   };
 
   window.FireData = STATIC ? Static : Server;
