@@ -1,0 +1,16 @@
+{
+  "name": "FireCal: Harmonized Burning Calendar",
+  "short_name": "FireCal",
+  "description": "Harmonized MODIS + VIIRS burning activity calendar and early warning for anywhere on Earth.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f9f9f7",
+  "theme_color": "#c9501f",
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

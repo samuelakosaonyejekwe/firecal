@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>FireCal</title>
+  <meta name="description" content="Harmonized MODIS + VIIRS burning activity calendar for anywhere on Earth">
+  <meta name="theme-color" content="#c9501f">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg?v={{v}}" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon-192.png?v={{v}}">
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+  <link rel="preconnect" href="https://server.arcgisonline.com" crossorigin>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
+  <link rel="stylesheet" href="/static/styles.css?v={{v}}">
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
+  <script defer src="/static/app.js?v={{v}}"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 2c1 3.5-1.6 5.3-1.6 8.2 0 1.3.8 2.3 2 2.3 1.6 0 2.3-1.5 2-3.6 2.5 1.8 4 4.4 4 7.1A6.4 6.4 0 0 1 12 22a6.4 6.4 0 0 1-6.4-6c0-4.6 4.1-7 6.4-14Z"/></svg>
+      <div>
+        <h1>FireCal</h1>
+        <p>Harmonized MODIS + VIIRS burning calendar · anywhere on Earth</p>
+      </div>
+    </div>
+    <form class="search" id="searchForm" role="search" autocomplete="off">
+      <input id="search" type="search" list="countryList" placeholder="Search any country…" aria-label="Search any country">
+      <datalist id="countryList"></datalist>
+    </form>
+    <div class="top-actions">
+      <button id="helpBtn" class="ghost icon" type="button" aria-label="How to use FireCal">?</button>
+      <button id="theme" class="ghost icon" type="button" aria-label="Toggle dark mode">◐</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- ───────────── map / area of interest ───────────── -->
+    <aside class="side">
+      <section class="card map-card">
+        <div class="card-head">
+          <div class="seg" role="tablist" id="layerMode" aria-label="Map layer">
+            <button role="tab" aria-selected="true" data-layer="history">History</button>
+            <button role="tab" aria-selected="false" data-layer="live">Live · 7 days</button>
+          </div>
+          <div class="btn-row">
+            <button id="draw" type="button">Draw area</button>
+            <button id="locate" class="ghost" type="button" title="Use my location">◎ Me</button>
+          </div>
+        </div>
+        <div id="map" role="application" aria-label="World map. Click a country, or use Draw area and drag a rectangle."></div>
+        <div class="map-foot">
+          <div class="map-filters" id="histFilters">
+            <label class="field">Year <select id="mapYear"></select></label>
+            <label class="field">Month <select id="mapMonth"></select></label>
+          </div>
+          <div class="legend" id="mapLegend"></div>
+          <p class="hint">Click any country, search above, or draw a box anywhere, including across borders. <span id="readyCount"></span></p>
+          <details class="coords">
+            <summary>Enter coordinates</summary>
+            <form id="coordForm" class="coord-grid">
+              <label>West <input name="w" type="number" step="0.1" min="-180" max="180" required></label>
+              <label>South <input name="s" type="number" step="0.1" min="-90" max="90" required></label>
+              <label>East <input name="e" type="number" step="0.1" min="-180" max="180" required></label>
+              <label>North <input name="n" type="number" step="0.1" min="-90" max="90" required></label>
+              <button type="submit">Analyze box</button>
+            </form>
+          </details>
+        </div>
+      </section>
+
+      <section class="card method-card">
+        <details open id="methodBox">
+          <summary><h2>How the records are harmonized</h2></summary>
+          <ol class="method">
+            <li><b>Clean.</b> Vegetation fires only (FIRMS <code>type 0</code>); MODIS confidence ≥ 30, VIIRS nominal/high.</li>
+            <li><b>Common grid.</b> Detections are binned into 0.1° cells per day. A cell with ≥ 1 detection is a <b>fire cell-day</b>, which removes most of the 1 km vs 375 m pixel-size effect.</li>
+            <li><b>Calibrate locally.</b> Over 2012+ both sensors saw the same fires. For <i>your</i> area we fit VIIRS ÷ MODIS per calendar month, shrunk toward the area ratio and then toward a worldwide ratio, so small or quiet areas stay stable.</li>
+            <li><b>Three eras.</b> Terra-only (2000–Jul 2002) and Terra+Aqua (to Jan 2012) are scaled to VIIRS-equivalent; VIIRS is used as-is after that.</li>
+            <li><b>Validate.</b> Leave-one-year-out cross-validation predicts each VIIRS year from MODIS alone.</li>
+            <li><b>Live.</b> The last week of VIIRS S-NPP near-real-time detections is compared with the same dates in every past year (static industrial sources masked).</li>
+          </ol>
+          <p class="hint">Data: NASA FIRMS — MODIS C6.1, VIIRS S-NPP 375 m (archive + NRT). Boundaries: Natural Earth.</p>
+        </details>
+      </section>
+    </aside>
+
+    <!-- ───────────── results ───────────── -->
+    <div class="content" id="content" aria-busy="true">
+      <section class="aoi-head" id="aoiHead">
+        <div>
+          <p class="eyebrow">Area of interest</p>
+          <h2 id="aoiTitle">Loading…</h2>
+          <p class="sub" id="aoiSub"></p>
+        </div>
+        <div class="btn-row">
+          <button id="share" class="ghost" type="button">Share</button>
+          <button id="csv" class="ghost" type="button">CSV</button>
+          <button id="print" class="ghost" type="button">Print report</button>
+        </div>
+      </section>
+
+      <div id="banner" class="banner" hidden></div>
+
+      <section class="card now-card" id="nowCard" hidden>
+        <div class="card-head">
+          <div>
+            <h2>Early warning: this week</h2>
+            <p class="sub" id="nowSub"></p>
+          </div>
+          <div id="nowStatus"></div>
+        </div>
+        <div class="now-body">
+          <div class="now-figs" id="nowFigs"></div>
+          <div class="now-bars" id="nowBars" aria-label="Daily fire cell-days this week"></div>
+        </div>
+      </section>
+
+      <div id="results">
+        <section class="kpis" id="kpis"></section>
+
+        <section class="card brief-card">
+          <div class="card-head">
+            <div>
+              <h2>What this means</h2>
+              <p class="sub">Plain-language briefing for this area, written for your role</p>
+            </div>
+            <div class="seg" role="tablist" id="audience" aria-label="Audience">
+              <button role="tab" aria-selected="true" data-aud="responders">Responders</button>
+              <button role="tab" aria-selected="false" data-aud="managers">Land managers</button>
+              <button role="tab" aria-selected="false" data-aud="scientists">Scientists</button>
+            </div>
+          </div>
+          <ul class="brief" id="briefList"></ul>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>Burning activity calendar</h2>
+              <p class="sub" id="calSub">Fire cell-days per month, VIIRS-equivalent</p>
+            </div>
+            <div class="seg" role="tablist" id="calMode">
+              <button role="tab" aria-selected="true" data-mode="value">Activity</button>
+              <button role="tab" aria-selected="false" data-mode="z">Anomaly</button>
+            </div>
+          </div>
+          <div class="chart tall" id="chCalendar" data-render="calendar"></div>
+          <div class="legend" id="calLegend"></div>
+        </section>
+
+        <div class="grid2">
+          <section class="card">
+            <h2>Critical periods</h2>
+            <p class="sub">Typical fire season for this area, median of all seasons</p>
+            <div id="critical"></div>
+          </section>
+          <section class="card">
+            <h2>Unusual conditions</h2>
+            <p class="sub">Months at least 2 standard deviations from their normal</p>
+            <div id="unusual" class="table-wrap"></div>
+          </section>
+        </div>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>Seasonal profile</h2>
+              <p class="sub">Daily fire cell-days (7-day mean): normal range vs a selected season</p>
+            </div>
+            <label class="field">Season <select id="season"></select></label>
+          </div>
+          <div class="legend" id="profLegend"></div>
+          <div class="chart" id="chProfile" data-render="profile"></div>
+        </section>
+
+        <section class="card" id="dailyCard">
+          <div class="card-head">
+            <div>
+              <h2>Daily calendar</h2>
+              <p class="sub">Each square is one day; hover or tap for sensor detail</p>
+            </div>
+            <label class="field">Year <select id="dayYear"></select></label>
+          </div>
+          <div class="chart short" id="chDaily" data-render="daily"></div>
+        </section>
+
+        <div class="grid2">
+          <section class="card">
+            <h2>Season timing</h2>
+            <p class="sub">Bar = 10%→90% of the season's burning; dot = peak</p>
+            <div class="chart tall" id="chTiming" data-render="timing"></div>
+          </section>
+          <section class="card">
+            <h2>Season totals</h2>
+            <p class="sub">Fire cell-days per season vs the long-term mean</p>
+            <div class="chart tall" id="chTotals" data-render="totals"></div>
+          </section>
+        </div>
+
+        <section class="card">
+          <h2>Why harmonization matters</h2>
+          <p class="sub">Annual fire cell-days. Raw MODIS sees several times fewer fires than VIIRS; the harmonized record rescales MODIS so the whole record is one consistent series (it equals VIIRS from 2012)</p>
+          <div class="chart" id="chYearly" data-render="yearly"></div>
+          <div class="legend" id="yearLegend"></div>
+        </section>
+
+        <div class="grid2">
+          <section class="card">
+            <h2>Calibration fit</h2>
+            <p class="sub">Monthly MODIS vs VIIRS cell-days over the overlap years</p>
+            <div class="legend" id="scatLegend"></div>
+            <div class="chart" id="chScatter" data-render="scatter"></div>
+          </section>
+          <section class="card">
+            <h2>Cross-validation</h2>
+            <p class="sub">Each year predicted from MODIS with that year held out</p>
+            <div id="cvTable" class="table-wrap"></div>
+          </section>
+        </div>
+      </div>
+      <div class="loading" id="loading">Loading…</div>
+    </div>
+  </main>
+
+  <dialog id="help" class="help" aria-labelledby="helpTitle">
+    <h2 id="helpTitle">Welcome to FireCal</h2>
+    <p>Satellites have watched fires since 2000, but the older <b>MODIS</b> sensors and the newer, sharper <b>VIIRS</b> sensor count them differently. FireCal <b>harmonizes</b> both into one consistent 24-year burning calendar for any place on Earth.</p>
+    <ol>
+      <li><b>Pick an area.</b> Search a country, click it on the map, tap <b>◎ Me</b>, or <b>Draw area</b> for a custom box. A country opened for the first time takes a minute or two to load; after that it's instant.</li>
+      <li><b>Check this week.</b> The <b>Early warning</b> card compares the last week of live NASA detections with the same dates in every past year.</li>
+      <li><b>Read the calendar.</b> Every month since 2000 appears as one square: darker means more burning. Switch to <b>Anomaly</b> to spot unusual months, and tap a row to open that year day by day.</li>
+      <li><b>Plan.</b> <b>Critical periods</b> show when the season opens, peaks and closes. <b>What this means</b> summarizes it for responders, land managers or scientists.</li>
+      <li><b>Share.</b> Every view has its own link. Print a report or download the data as CSV.</li>
+    </ol>
+    <p class="hint">A <b>fire cell-day</b> is one 0.1° grid cell (≈ 11 km) with at least one satellite fire detection that day. Press <kbd>/</kbd> to search.</p>
+    <form method="dialog"><button id="helpClose" type="submit">Get started</button></form>
+  </dialog>
+  <div class="tip" id="tip" role="status"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <noscript><p style="padding:16px">FireCal needs JavaScript enabled.</p></noscript>
+</body>
+</html>

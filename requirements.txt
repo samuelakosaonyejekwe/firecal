@@ -1,0 +1,6 @@
+pandas
+pyarrow
+duckdb
+fastapi
+uvicorn[standard]
+shapely>=2
