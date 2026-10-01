@@ -38,8 +38,9 @@ jobs:
         run: |
           data=$(gh release view firecal-data --json assets --jq '[.assets[] | .name + "@" + .updatedAt] | sort | join(",")' 2>/dev/null | sha1sum | cut -c1-16)
           code=$(git ls-files -s app pipeline tests requirements.txt requirements-dev.txt | sha1sum | cut -c1-16)
-          # NASA's data version (either server; a re-stamped unchanged file doesn't count): app/feeds.py
-          nasa=$(python3 app/feeds.py 2>/dev/null | cut -d' ' -f1,2 | sha1sum | cut -c1-16)
+          # NASA's data, identified by its file size on the newest server (app/feeds.py): a re-stamped,
+          # unchanged file doesn't trigger a rebuild
+          nasa=$(python3 app/feeds.py 2>/dev/null | cut -d' ' -f2 | sha1sum | cut -c1-16)
           echo "site=site-$data-$code" >> "$GITHUB_OUTPUT"
           echo "published=published-$data-$code-$nasa" >> "$GITHUB_OUTPUT"
 

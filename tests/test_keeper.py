@@ -12,9 +12,9 @@ NOW = dt.datetime.now(dt.timezone.utc)
 def world(monkeypatch):
     state = {"nasa": NOW - dt.timedelta(hours=1), "site": NOW - dt.timedelta(hours=1), "in_flight": False, "dispatched": 0,
              "watcher": True, "watchers_started": 0}
-    monkeypatch.setattr(keeper, "nasa_updated", lambda: state["nasa"])
+    monkeypatch.setattr(keeper, "nasa_state", lambda: (state["nasa"], state.get("nasa_bytes", 2000)))
     monkeypatch.setattr(keeper, "website_url", lambda: "https://example.github.io/firecal/")
-    monkeypatch.setattr(keeper, "website_updated", lambda url: state["site"])
+    monkeypatch.setattr(keeper, "website_state", lambda url: (state["site"], state.get("site_bytes", 1000) if state["site"] else None))
     monkeypatch.setattr(keeper, "build_in_flight",
                         lambda w=keeper.WORKFLOW: state["in_flight"] if w == keeper.WORKFLOW else state["watcher"])
     state["workflow_state"], state["enabled"] = "active", 0
@@ -108,3 +108,10 @@ def test_cloud_watch_rebuilds_quickly_and_ends_on_time(world, monkeypatch):
 def test_site_url_from_the_environment(monkeypatch):
     monkeypatch.setenv("FIRECAL_SITE_URL", "https://someone.github.io/firecal")
     assert keeper.website_url() == "https://someone.github.io/firecal/"
+
+
+def test_restamped_unchanged_file_is_not_a_reason_to_rebuild(world):
+    # both NASA servers re-stamped the same file later than the site's time: same size, so current
+    world["site"], world["site_bytes"], world["nasa_bytes"] = NOW - dt.timedelta(hours=3), 1500, 1500
+    msg, _ = keeper.check_once()
+    assert "current" in msg and world["dispatched"] == 0

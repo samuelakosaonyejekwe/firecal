@@ -69,6 +69,8 @@ def main():
     url, first, size = newest()  # whichever NASA server has the newest data (app/feeds.py)
     modified = first.isoformat()
     old = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
+    if old.get("source_bytes") == size:  # the same file, perhaps re-stamped by NASA: keep when it was first seen
+        modified = old["source_last_modified"]
     if not args.force and old.get("source_last_modified") == modified:
         print(f"NASA feed unchanged since {modified}; nothing to do")
         sys.exit(3)

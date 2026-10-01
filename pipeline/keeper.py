@@ -40,9 +40,11 @@ COOLDOWN = 30        # minutes between rebuild requests from the keeper
 ACTIVE = ("queued", "in_progress", "waiting", "pending", "requested")
 
 
-def nasa_updated() -> dt.datetime:
-    """When NASA first published its current data (either server; re-stamps of the same file don't count)."""
-    return newest()[1]
+def nasa_state() -> tuple[dt.datetime, int]:
+    """(when NASA first published its current data, the file's size). The size identifies the data:
+    NASA's servers sometimes re-stamp an unchanged file, so times alone can't say whether it's new."""
+    _, first, size = newest()
+    return first, size
 
 
 def website_url() -> str:
@@ -51,12 +53,14 @@ def website_url() -> str:
     return json.loads(gh("api", "repos/{owner}/{repo}/pages"))["html_url"].rstrip("/") + "/"
 
 
-def website_updated(url: str) -> dt.datetime | None:
+def website_state(url: str) -> tuple[dt.datetime | None, int | None]:
+    """(NASA time, file size) of the live data the website shows; (None, None) if unreadable."""
     try:
         with urllib.request.urlopen(url + "data/live/meta.json?nocache=" + str(int(time.time())), timeout=60) as r:
-            return dt.datetime.fromisoformat(json.load(r)["source_last_modified"])
+            m = json.load(r)
+        return dt.datetime.fromisoformat(m["source_last_modified"]), m.get("source_bytes")
     except Exception:
-        return None
+        return None, None
 
 
 def build_in_flight(workflow: str = WORKFLOW) -> bool:
@@ -96,10 +100,10 @@ def check_once(last_request: dt.datetime | None = None, grace: int = GRACE) -> t
 
 def _check_freshness(last_request: dt.datetime | None, grace: int = GRACE) -> tuple[str, dt.datetime | None]:
     now = dt.datetime.now(dt.timezone.utc)
-    nasa = nasa_updated()
-    site = website_updated(website_url())
-    if site and site >= nasa:
-        return f"website is current (NASA {nasa:%H:%M} UTC)", last_request
+    nasa, nasa_bytes = nasa_state()
+    site, site_bytes = website_state(website_url())
+    if site and (site_bytes == nasa_bytes or site >= nasa):  # same file, or nothing newer
+        return f"website is current (NASA {site:%H:%M} UTC)", last_request
     if now - nasa < dt.timedelta(minutes=grace):
         return f"NASA updated at {nasa:%H:%M} UTC; giving GitHub's schedule until {nasa + dt.timedelta(minutes=grace):%H:%M}", last_request
     if build_in_flight():
