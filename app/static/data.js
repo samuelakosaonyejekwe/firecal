@@ -111,33 +111,76 @@
     return S;
   }
 
-  // Live fires: the published copy, shown at once. Meanwhile, if that copy is more than an hour behind
-  // NASA (e.g. GitHub Actions is down), this browser reads NASA's own file with live.js (same rules)
-  // and switches to it, telling the app through onLiveUpdate so it can redraw.
-  const BEHIND_MS = 60 * 60 * 1000, liveListeners = [];
-  let direct = null;
-  async function upgradeFromNasa(lm) {
+  // Live fires. The published copy shows at once; independently of GitHub, the browser asks NASA (a few
+  // hundred bytes) on opening and every 10 minutes whether it has newer fires. If so, it reads NASA's
+  // last-24-hours file, joins it to the earlier days it already has, and switches to that (live.js, same
+  // rules as the cloud); when GitHub's published copy catches up, it switches back. App: onLiveUpdate.
+  const RECHECK_MS = 10 * 60 * 1000, GITHUB_GRACE_MS = 15 * 60 * 1000, liveListeners = [];
+  let published = null, direct = null, checking = null, timer = null;
+  const newer = (a, b) => !!a?.latest_detection && (!b?.latest_detection || a.latest_detection > b.latest_detection);
+  function resetLive() { for (const k of [...cache.keys()]) if (k.startsWith("live")) cache.delete(k); }
+  function announce(meta) { for (const f of liveListeners) try { f(meta); } catch (e) { console.error(e); } }
+
+  async function allTiles(src) { // every live tile of what is shown now (published: ~0.5 MB, fetched once)
+    if (src.direct) return src.tiles;
+    const ix = await liveIndex(), keys = Object.keys(ix.tiles), out = {};
+    await pool(keys, 6, async (k) => { out[k] = await liveTile(k); });
+    return out;
+  }
+
+  async function fromNasa(cur) { // newer live data from NASA than `cur`, or null
     if (!window.FireLive || navigator.connection?.saveData) return null;
-    const head = await FireLive.nasaHead(), nasa = head?.modified;
-    if (!nasa) return null;
-    // same file as the published copy (a server re-stamping unchanged data): nothing new
-    if (lm && head.size && lm.source_bytes && head.size === lm.source_bytes) return null;
-    if (lm && nasa - new Date(lm.source_last_modified) <= BEHIND_MS) return null;
+    const head = await FireLive.nasaHead();
+    if (!head) return null;
+    if (cur.meta.source_bytes && head.size === cur.meta.source_bytes) return null; // the same file
+    if (head.modified <= new Date(cur.meta.source_last_modified)) return null;    // the mirror isn't ahead
+    if (Date.now() - head.modified < GITHUB_GRACE_MS && !cur.direct) return null;  // just updated: GitHub is on it
     const [mask, own, ix] = await Promise.all([ // without the gas-flare mask or the own cells, keep the published copy
       fetchJSON("data/live/static_cells.json"), fetchJSON("data/own_cells.json"),
       fetchJSON("data/live/tiles/index.json", { cache: "no-cache" }).catch(() => ({ tile_cells: 100 }))]);
-    return { ...FireLive.build(await FireLive.fetchParsed(mask.cells), ix.tile_cells, nasa.toISOString()), own, direct: true };
+    const fresh = await FireLive.fetchParsed(mask.cells, FireLive.FEED24);
+    if (!newer(fresh, cur.meta)) return null; // e.g. the mirror is behind the server GitHub read
+    let cd = FireLive.merge(FireLive.fromTiles(await allTiles(cur)), fresh);
+    if (!cd) { // the copy shown is more than a day old: read NASA's whole 7-day file
+      cd = await FireLive.fetchParsed(mask.cells, FireLive.FEED);
+      if (!newer(cd, cur.meta)) return null;
+    }
+    const live = FireLive.build(cd, ix.tile_cells, head.modified.toISOString());
+    live.meta.source_bytes = head.size;
+    return { ...live, own, direct: true };
   }
-  const liveSource = () => direct ? Promise.resolve(direct) : once("livesrc", async () => {
-    const lm = await fetchJSON("data/live/meta.json", { cache: "no-cache" }, 2).catch(() => null);
-    const up = once("liveup", () => upgradeFromNasa(lm)).then((d) => {
-      if (d) { direct = d; for (const f of liveListeners) try { f(d.meta); } catch (e) { console.error(e); } }
+
+  function checkNasa() {
+    if (!checking) checking = (async () => {
+      const cur = direct || { meta: published, direct: false };
+      if (!cur.meta) return null;
+      const d = await fromNasa(cur);
+      if (d) { direct = d; resetLive(); announce(d.meta); }
       return d;
-    }).catch((e) => { console.warn("FireCal: reading live fires from NASA failed; showing the published copy", e); return null; });
-    if (lm) return { meta: lm, direct: false };
-    const d = await up; // no published copy at all: wait for NASA
-    if (!d) throw new Error("live data unavailable");
-    return d;
+    })().catch((e) => { console.warn("FireCal: couldn't read live fires from NASA; keeping what is shown", e); return null; })
+      .finally(() => { checking = null; });
+    return checking;
+  }
+
+  async function recheck() { // every 10 minutes while the page is open
+    const lm = await fetchJSON("data/live/meta.json", { cache: "no-cache" }, 2).catch(() => null);
+    if (lm && newer(lm, direct ? direct.meta : published)) { // GitHub has caught up (or moved ahead)
+      published = lm; direct = null; resetLive();
+      cache.set("livesrc", Promise.resolve({ meta: lm, direct: false }));
+      announce(lm);
+    }
+    await checkNasa();
+  }
+
+  const liveSource = () => direct ? Promise.resolve(direct) : once("livesrc", async () => {
+    published = await fetchJSON("data/live/meta.json", { cache: "no-cache" }, 2).catch(() => null);
+    if (!timer) timer = setInterval(() => { if (document.visibilityState !== "hidden") recheck(); }, RECHECK_MS);
+    if (published) { checkNasa(); return { meta: published, direct: false }; }
+    // nothing published yet: read NASA's 7-day file directly
+    const mask = await fetchJSON("data/live/static_cells.json"), own = await fetchJSON("data/own_cells.json");
+    const head = await FireLive.nasaHead(), cd = await FireLive.fetchParsed(mask.cells, FireLive.FEED);
+    direct = { ...FireLive.build(cd, 100, (head?.modified || new Date()).toISOString()), own, direct: true };
+    return direct;
   });
   const liveOverview = async () => { const s = await liveSource(); return s.direct ? s.overview : once("liveov", () => fetchJSON("data/live/overview.json", { cache: "no-cache" })); };
   const liveIndex = async () => { const s = await liveSource(); return s.direct ? s.index : once("liveindex", () => fetchJSON("data/live/tiles/index.json", { cache: "no-cache" })); };

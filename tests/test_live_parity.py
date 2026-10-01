@@ -118,3 +118,73 @@ def test_nasa_unreachable_keeps_the_published_live_files(tmp_path, monkeypatch):
     got, want = tmp_path / "site" / "data" / "live", published / "data" / "live"
     names = sorted(p.relative_to(want).as_posix() for p in want.rglob("*.json") if p.name != "static_cells.json")
     assert names and all(json.loads((got / n).read_text()) == json.loads((want / n).read_text()) for n in names)
+
+
+MERGE_RUNNER = """
+const L = require(process.argv[1]), G = require(process.argv[2]);
+const fs = require('fs');
+const inp = JSON.parse(fs.readFileSync(0, 'utf8'));
+const shapes = JSON.parse(fs.readFileSync(process.argv[3], 'utf8')).features;
+const load = (dir) => {
+  const ix = JSON.parse(fs.readFileSync(dir + '/tiles/index.json', 'utf8')), tiles = {};
+  for (const k of Object.keys(ix.tiles)) tiles[k] = JSON.parse(fs.readFileSync(dir + '/tiles/' + k + '.json', 'utf8'));
+  return L.fromTiles(tiles);
+};
+const fresh = L.parse(fs.readFileSync(inp.csv24, 'utf8'), inp.staticCells);
+const cd = L.merge(load(inp.siteDir), fresh);
+const old = L.merge(load(inp.oldSiteDir), fresh);
+const lv = L.build(cd, inp.tileCells, 'x');
+const countries = {};
+for (const id of inp.countries) countries[id] = L.countryCells(lv, shapes.find((f) => f.properties.id === id), null, G);
+process.stdout.write(JSON.stringify({ meta: lv.meta, index: lv.index, tiles: lv.tiles, overview: lv.overview, countries, tooOld: old === null }));
+"""
+
+
+def timed_feed(path, rows, until=None, since=None):
+    lines = [HEADER]
+    for t, lat, lon, conf in rows:
+        if (until is None or t <= until) and (since is None or t > since):
+            lines.append(f"{lat},{lon},330.1,0.4,0.4,{t:%Y-%m-%d},{t:%H%M},N,VIIRS,{conf},2.0NRT,290.2,3.5,D")
+    path.write_text("\n".join(lines) + "\n")
+
+
+def test_last_24_hours_joined_to_an_older_copy_equals_the_full_feed(tmp_path):
+    rng = random.Random(5)
+    now = pd.Timestamp("2026-10-01 18:00")
+    rows = []
+    for _ in range(8000):  # a rolling 7-day window of detections, minute resolution
+        t = now - pd.Timedelta(minutes=rng.randrange(0, 7 * 24 * 60))
+        lat0, lon0 = rng.choice(SPOTS)
+        rows.append((t, round(lat0 + rng.gauss(0, 1.5), 5), round(lon0 + rng.gauss(0, 1.5), 5), rng.choice(["n", "h", "l"])))
+    build = tmp_path / "build"
+    build.mkdir()
+    full, site_csv, csv24, old_csv = (tmp_path / f for f in ("full.csv", "site.csv", "24h.csv", "old.csv"))
+    timed_feed(full, rows)                                            # NASA's 7-day file now
+    timed_feed(site_csv, rows, until=now - pd.Timedelta(hours=12))    # what GitHub published 12 hours ago
+    timed_feed(csv24, rows, since=now - pd.Timedelta(hours=24))       # NASA's last-24-hours file now
+    timed_feed(old_csv, rows, until=now - pd.Timedelta(hours=36))     # a copy published 36 hours ago
+    want, site = tmp_path / "want", tmp_path / "site"
+    live.publish(live.cells_from_csv(full), want, build, "now")
+    live.publish(live.cells_from_csv(site_csv), site, build, "then")
+    shapes = ROOT / "app" / "resources" / "shapes.geojson"
+    wanted = ["Nigeria", "Zambia", "Brazil", "Russian_Federation", "Cyprus", "South_Africa", "Netherlands", "Australia"]
+    old_site = tmp_path / "old_site"
+    live.publish(live.cells_from_csv(old_csv), old_site, build, "older")
+    inp = {"siteDir": str(site), "oldSiteDir": str(old_site), "csv24": str(csv24), "staticCells": [],
+           "tileCells": MAP_TILE, "countries": wanted}
+    res = subprocess.run(["node", "-e", MERGE_RUNNER, str(ROOT / "app" / "static" / "live.js"), str(ROOT / "app" / "static" / "geo.js"),
+                          str(shapes)], input=json.dumps(inp), capture_output=True, text=True, check=True)
+    js = json.loads(res.stdout)
+    assert js["tooOld"]  # a copy with nothing after the 24-hour file's first day can't be joined (7-day file instead)
+    read = lambda name: json.loads((want / name).read_text())  # noqa: E731
+    meta = read("meta.json")
+    assert js["meta"]["days"] == meta["days"] and js["meta"]["complete_days"] == meta["complete_days"]
+    assert js["meta"]["latest_detection"] == meta["latest_detection"] and js["meta"]["detections"] == meta["detections"]
+    assert js["index"] == read("tiles/index.json")
+    for k in js["index"]["tiles"]:
+        assert sorted(map(tuple, read(f"tiles/{k}.json")["rows"])) == sorted(map(tuple, js["tiles"][k]["rows"]))
+    ov = read("overview.json")
+    assert js["overview"]["max"] == ov["max"] and sorted(map(tuple, js["overview"]["cells"])) == sorted(map(tuple, ov["cells"]))
+    countries = read("countries.json")["countries"]
+    for cid in wanted:
+        assert js["countries"][cid] == countries.get(cid, {"cells": [0] * len(meta["complete_days"])})["cells"], cid

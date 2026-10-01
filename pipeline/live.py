@@ -43,13 +43,17 @@ def fetch_cells(url: str) -> pd.DataFrame:
 
 
 def cells_from_csv(csv: pathlib.Path) -> pd.DataFrame:
-    """NASA's CSV -> fire cell-days (detections and FRP per 0.1° cell and day), nominal/high confidence."""
+    """NASA's CSV -> fire cell-days (detections and FRP per 0.1° cell and day), nominal/high confidence.
+    attrs["latest"] is the newest detection in the file ("YYYY-MM-DD HHMM" UTC), so browsers can tell
+    whether a NASA file they read is newer than the published copy (app/static/live.js)."""
+    src = f"read_csv('{csv.as_posix()}', types = {{'confidence': 'VARCHAR', 'acq_time': 'VARCHAR', 'acq_date': 'VARCHAR'}})"
     with duckdb.connect() as con:
-        return con.execute(f"""
+        g = con.execute(f"""
             SELECT CAST(acq_date AS DATE) AS d, CAST(floor(latitude * {CELL}) AS INTEGER) AS yi,
                    CAST(floor(longitude * {CELL}) AS INTEGER) AS xi, count(*) AS n, sum(frp) AS frp
-            FROM read_csv('{csv.as_posix()}', types = {{'confidence': 'VARCHAR'}})
-            WHERE confidence IN ('nominal', 'high', 'n', 'h') GROUP BY ALL""").df()
+            FROM {src} WHERE confidence IN ('nominal', 'high', 'n', 'h') GROUP BY ALL""").df()
+        g.attrs["latest"] = con.execute(f"SELECT max(acq_date || ' ' || lpad(acq_time, 4, '0')) FROM {src}").fetchone()[0]
+    return g
 
 
 def write(path: pathlib.Path, obj):
@@ -106,6 +110,7 @@ def keep_published(site_url: str, out: pathlib.Path, build: pathlib.Path):
 
 def publish(g: pd.DataFrame, out: pathlib.Path, build: pathlib.Path, modified: str, size: int | None = None):
     """Write the live files from fire cell-days (see the module docstring)."""
+    latest = g.attrs.get("latest")  # (pandas doesn't carry attrs through merges)
     g["d"] = pd.to_datetime(g["d"])
     static = build / "static_cells.parquet"
     if static.exists():  # drop gas flares / industrial heat (FIRMS NRT has no 'type' column)
@@ -155,7 +160,8 @@ def publish(g: pd.DataFrame, out: pathlib.Path, build: pathlib.Path, modified: s
 
     write(out / "meta.json", {"source_last_modified": modified, "source_bytes": size, "days": iso, "complete_days": complete,
                               "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"),
-                              "detections": int(g.n.sum()), "static_masked": static.exists()})
+                              "detections": int(g.n.sum()), "static_masked": static.exists(),
+                              "latest_detection": latest})
     print(f"live: {len(g)} cell-days, {len(tiles)} tiles, {len(per)} countries, NASA updated {modified}")
 
 

@@ -2,7 +2,9 @@
 
 Source: FIRMS global VIIRS S-NPP 375 m NRT feed — the same satellite and sensor as the
 harmonized record's reference, so current activity is directly comparable with history.
-The ~30 MB feed is downloaded at most every REFRESH seconds and reduced to 0.1° cell-days.
+Every CHECK seconds it asks NASA (a few hundred bytes) whether the ~30 MB feed changed, and downloads
+it only when it did (app/feeds.py: either NASA server, compared by content); then it is reduced to 0.1°
+cell-days. If NASA can't be reached, the last good copy keeps being served.
 """
 from __future__ import annotations
 
@@ -17,7 +19,7 @@ import pandas as pd
 from .constants import CELL
 from .feeds import newest
 
-REFRESH = 3 * 3600
+CHECK = 600  # seconds between "has NASA's feed changed?" checks
 
 
 class NRTFeed:
@@ -30,9 +32,9 @@ class NRTFeed:
         self._loaded_mtime = 0.0
         self.error: str | None = None
 
-    def _refresh(self):
+    def _refresh(self, url: str):
         csv = self.dir / "feed.csv.part"
-        urllib.request.urlretrieve(newest()[0], csv)  # whichever NASA server has the newest data
+        urllib.request.urlretrieve(url, csv)
         tmp = self.path.with_suffix(".tmp")
         with duckdb.connect() as con:
             con.execute(f"""
@@ -47,13 +49,17 @@ class NRTFeed:
         csv.unlink(missing_ok=True)
 
     def refresh_if_stale(self):
-        age = time.time() - self.path.stat().st_mtime if self.path.exists() else float("inf")
-        if age <= REFRESH:
-            return
+        """Download NASA's feed if its content changed since the copy we have (or we have none)."""
+        stamp = self.dir / "source_bytes"
         try:
-            self._refresh()
+            url, _, size = newest(timeout=30, waits=())
+            if self.path.exists() and stamp.exists() and stamp.read_text() == str(size):
+                self.error = None
+                return  # unchanged (perhaps re-stamped by NASA): nothing to download
+            self._refresh(url)
+            stamp.write_text(str(size))
             self.error = None
-        except Exception as e:  # offline / FIRMS down: keep serving the stale copy
+        except Exception as e:  # offline / FIRMS down: keep serving the last good copy
             self.error = f"live feed unavailable ({e.__class__.__name__})"
 
     def start(self):
@@ -61,7 +67,7 @@ class NRTFeed:
         def loop():
             while True:
                 self.refresh_if_stale()
-                time.sleep(600)
+                time.sleep(CHECK)
         threading.Thread(target=loop, daemon=True, name="nrt-refresh").start()
 
     def frame(self) -> pd.DataFrame | None:
