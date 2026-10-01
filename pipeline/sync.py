@@ -30,6 +30,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 RELEASE = "firecal-data"
 WORKFLOW = "pages.yml"
 FILES = ("grid_daily.parquet", "static_cells.parquet", "built.json")
+UNAVAILABLE = "unavailable.json"  # release asset: countries NASA has no usable archive for, with the reason
+PERMANENT = ("no VIIRS archive", "has no MODIS archive")  # failures that retrying won't fix
 
 
 def gh(*args) -> str:
@@ -64,6 +66,27 @@ class GitHubStore:
 
     def has(self, cid) -> bool:
         return self._asset(cid) is not None
+
+    def unavailable(self) -> dict:
+        if UNAVAILABLE not in self.assets:
+            return {}
+        with tempfile.TemporaryDirectory() as tmp:
+            gh("release", "download", RELEASE, "--dir", tmp, "--pattern", UNAVAILABLE, "--clobber")
+            return json.loads((pathlib.Path(tmp) / UNAVAILABLE).read_text())
+
+    def mark_unavailable(self, cid, reason):
+        """Record once that NASA has no usable archive for a country, so later runs skip it."""
+        known = self.unavailable()
+        known[cid] = reason
+        if not self.exists:
+            gh("release", "create", RELEASE, "--title", "FireCal data",
+               "--notes", "Harmonized FireCal country grids (0.1° daily fire cell-days). Maintained by pipeline/world.py.")
+            self.exists = True
+        with tempfile.TemporaryDirectory() as tmp:
+            f = pathlib.Path(tmp) / UNAVAILABLE
+            f.write_text(json.dumps(known, indent=1, sort_keys=True))
+            gh("release", "upload", RELEASE, str(f), "--clobber")
+        self.assets[UNAVAILABLE] = {"name": UNAVAILABLE}
 
     def download(self, cid):
         out = DATA / "countries" / cid

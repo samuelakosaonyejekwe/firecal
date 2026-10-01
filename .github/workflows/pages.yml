@@ -83,7 +83,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p dl data/countries
-          gh release download firecal-data --dir dl --pattern '*.parquet'
+          gh release download firecal-data --dir dl --pattern '*.parquet' --pattern 'unavailable.json'
+          [ -f dl/unavailable.json ] && mv dl/unavailable.json data/unavailable.json
           for f in dl/*.grid_daily.parquet; do
             c=$(basename "$f" .grid_daily.parquet); mkdir -p "data/countries/$c"
             mv "$f" "data/countries/$c/grid_daily.parquet"

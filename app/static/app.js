@@ -306,6 +306,12 @@ async function loadAOI() {
       return;
     }
   }
+  const na = a.country && state.byId[a.country]?.unavailable;
+  if (na) { // NASA has no usable fire archive for this country: say so instead of trying to load it
+    setBusy(false); $("results").hidden = true; state.data = null; state.nowLoading = false; renderNowcast();
+    banner(`NASA FIRMS has no usable fire archive for ${esc(state.byId[a.country].name)}, so it can't be harmonized.`, "warn");
+    return;
+  }
   const progress = (done, total, bytes, totalBytes) => {
     if (token === state.req && total) setBusy(true, `<span class="spinner"></span> Reading fire records for this area… ${done}/${total} tiles · ${fmt(bytes / 1e6, 1)} of ${fmt(totalBytes / 1e6, 1)} MB`);
   };

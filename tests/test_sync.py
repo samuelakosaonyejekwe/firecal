@@ -130,3 +130,14 @@ def test_cloud_skips_published_countries_without_downloading(env):
     (fake.dir / "Mali.grid_daily.parquet").write_bytes(b"mali")
     assert sync.sync_country("Mali", sync.GitHubStore(), skip_published=True) == ("already published", False)
     assert not (root / "Mali").exists() and not built
+
+
+def test_unavailable_countries_are_recorded_once(env):
+    fake, _, _ = env
+    store = sync.GitHubStore()
+    assert store.unavailable() == {}
+    store.mark_unavailable("Tuvalu", "no VIIRS archive for 'Tuvalu': cannot harmonize")
+    store.mark_unavailable("Nauru", "FIRMS has no MODIS archive for 'Nauru'")
+    again = sync.GitHubStore().unavailable()
+    assert set(again) == {"Tuvalu", "Nauru"} and fake.exists
+    assert all(any(p in r for p in sync.PERMANENT) for r in again.values())

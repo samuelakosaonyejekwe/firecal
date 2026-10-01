@@ -3,6 +3,7 @@
 Run:  .venv/bin/uvicorn app.main:app --port 8765   ->  http://127.0.0.1:8765
 """
 import hashlib
+import json
 import logging
 import os
 import pathlib
@@ -94,8 +95,11 @@ def health():
 def meta():
     store.refresh()
     ready = set(store.ready)
+    na = DATA / "unavailable.json"  # countries NASA has no usable archive for (written by the preload)
+    unavailable = json.loads(na.read_text()) if na.exists() else {}
     return JSONResponse({
-        "countries": [{"id": c["id"], "name": c["name"], "view": store.view(c["id"]), "ready": c["id"] in ready}
+        "countries": [{"id": c["id"], "name": c["name"], "view": store.view(c["id"]), "ready": c["id"] in ready,
+                       **({"unavailable": unavailable[c["id"]]} if c["id"] in unavailable and c["id"] not in ready else {})}
                       for c in sorted(store.meta.values(), key=lambda c: c["name"])],
         "range": {"start": MODIS_START.date().isoformat(), "end": store.end.date().isoformat(),
                   "viirs_start": VIIRS_START.date().isoformat()},

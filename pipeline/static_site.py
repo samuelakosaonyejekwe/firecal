@@ -195,11 +195,14 @@ def build_map_layers(store: Store, out: pathlib.Path, build: pathlib.Path):
 def build_meta(store: Store, out: pathlib.Path, version: str):
     ready = set(store.ready)
     pm, pt = store.prior()
+    na = DATA / "unavailable.json"  # downloaded from the release by the website workflow
+    unavailable = json.loads(na.read_text()) if na.exists() else {}
     write_json(out / "data" / "meta.json", {
         "static": True, "version": version, "built": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"),
         "countries": [{"id": c["id"], "name": c["name"], "view": store.view(c["id"]), "ready": c["id"] in ready,
                        # territories without a border shape are matched by data extent, as on the server
-                       **({"extent": store.view(c["id"])} if c["id"] in ready and c["id"] not in store._shape else {})}
+                       **({"extent": store.view(c["id"])} if c["id"] in ready and c["id"] not in store._shape else {}),
+                       **({"unavailable": unavailable[c["id"]]} if c["id"] in unavailable and c["id"] not in ready else {})}
                       for c in sorted(store.meta.values(), key=lambda c: c["name"])],
         "range": {"start": MODIS_START.date().isoformat(), "end": store.end.date().isoformat(),
                   "viirs_start": VIIRS_START.date().isoformat()},

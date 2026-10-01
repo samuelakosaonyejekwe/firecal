@@ -50,3 +50,40 @@ jobs:
           else
             python pipeline/world.py --shard ${{ matrix.shard }}/10 --skip-published
           fi
+
+  finalize:
+    # after all shards: recompute the worldwide calibration prior if the world has grown enough,
+    # committed under the owner's name with the same limited token (this rebuilds the website)
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
+      FIRECAL_DATA: ${{ github.workspace }}/data
+    steps:
+      - name: Check the publishing key
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::The FIRECAL_PUBLISH_TOKEN secret is missing; nothing was changed."
+            exit 1
+          fi
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
+          fetch-depth: 20
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Download every published country
+        run: |
+          mkdir -p dl data/countries
+          gh release download firecal-data --dir dl --pattern '*.grid_daily.parquet'
+          for f in dl/*.grid_daily.parquet; do
+            c=$(basename "$f" .grid_daily.parquet); mkdir -p "data/countries/$c"; mv "$f" "data/countries/$c/grid_daily.parquet"
+          done
+      - name: Update the worldwide calibration prior if due
+        run: python pipeline/finalize.py

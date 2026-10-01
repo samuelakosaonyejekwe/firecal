@@ -23,7 +23,9 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from pipeline.fetch import latest_archive_year  # noqa: E402
-from pipeline.sync import GitHubStore, archive_through, github_available, rebuild, sync_country  # noqa: E402
+from pipeline.fetch import DATA  # noqa: E402
+from pipeline.finalize import update_prior  # noqa: E402
+from pipeline.sync import PERMANENT, GitHubStore, archive_through, github_available, rebuild, sync_country  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PUBLISH_EVERY = 10         # rebuild the website after this many newly published countries
@@ -73,8 +75,16 @@ def main():
     if update:
         print(f"NASA's latest yearly archive: {latest}", flush=True)
     failed, published, pending = [], 0, 0
+    local_list = DATA / "unavailable.json"  # local copy for the local server
+    unavailable = store.unavailable() if store else (json.loads(local_list.read_text()) if local_list.exists() else {})
+    if store:
+        local_list.parent.mkdir(parents=True, exist_ok=True)
+        local_list.write_text(json.dumps(unavailable, indent=1, sort_keys=True))
     for i, cid in enumerate(ids, 1):
         t = time.time()
+        if cid in unavailable and not update:  # NASA has no usable archive; recorded on an earlier run
+            print(f"[{i}/{len(ids)}] {cid}: skipped, {unavailable[cid]}", flush=True)
+            continue
         try:
             how, changed = sync_country(cid, store, skip_published=skip and not update)
             if update and (archive_through(cid) or 0) < latest:
@@ -86,12 +96,18 @@ def main():
         except Exception as e:  # tiny territories may have no VIIRS archive at all
             failed.append(cid)
             print(f"[{i}/{len(ids)}] {cid} FAILED: {e}", flush=True)
+            if store and any(p in str(e) for p in PERMANENT):
+                store.mark_unavailable(cid, str(e))
+                unavailable[cid] = str(e)
+                local_list.write_text(json.dumps(unavailable, indent=1, sort_keys=True))
         if store and pending >= PUBLISH_EVERY:
             print("  → asking GitHub to rebuild the website" if store.rebuild_site() else "  (could not trigger the website rebuild)", flush=True)
             pending = 0
     if store and pending:
         print("→ asked GitHub to rebuild the website" if store.rebuild_site() else "(could not trigger the website rebuild)", flush=True)
     print(f"done; {published} published to GitHub, {len(failed)} failed: {failed}")
+    if store and not shard:  # a full local run: keep the worldwide calibration in step with the world
+        print(update_prior(), flush=True)
 
 
 if __name__ == "__main__":
