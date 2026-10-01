@@ -1,6 +1,7 @@
 # Publishes the FireCal website (static edition) to GitHub Pages.
-# Runs when code changes, when pipeline/world.py publishes new countries, and every 15 minutes
-# to pick up NASA's latest near-real-time fires. Runs that find nothing new exit in seconds.
+# Runs when code changes, when pipeline/world.py publishes new countries, when the live-fire watcher
+# (live.yml) sees newer NASA fires, and every 15 minutes on GitHub's best-effort schedule. Runs that
+# find nothing new exit in seconds.
 name: Publish website
 
 on:
@@ -127,3 +128,13 @@ jobs:
         with:
           path: .published
           key: ${{ steps.fp.outputs.published }}
+
+      - name: Make sure the live-fire watcher is running
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
+        run: |
+          # .github/workflows/live.yml keeps the live fires fresh around the clock; restart it if it stopped
+          [ -n "$GH_TOKEN" ] || exit 0
+          active=$(gh run list --workflow live.yml --limit 5 --json status --jq '[.[] | select(.status != "completed")] | length' || echo 1)
+          [ "$active" = "0" ] && gh workflow run live.yml && echo "started the live-fire watcher" || true

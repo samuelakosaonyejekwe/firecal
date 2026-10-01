@@ -1,13 +1,20 @@
 """Keep the website's live fires fresh even when GitHub's scheduled runs are delayed or dropped.
 
 GitHub runs scheduled workflows on a best-effort basis (they are delayed or skipped when Actions is
-busy or degraded). While the local FireCal server is running, this keeper checks every 15 minutes
-whether NASA has published live data that the website doesn't show yet. If the website is more than
-GRACE minutes behind and no website build is already queued or running, it asks GitHub to rebuild
-the site, with your own `gh` login. It does nothing when the site is current. It also switches the
-schedule back on if GitHub has disabled it (GitHub does that after 60 days without repository activity).
+busy or degraded), so the website does not rely on them. A keeper checks whether NASA has published
+live data that the website doesn't show yet; if the website is more than `grace` minutes behind and no
+website build is already queued or running, it asks GitHub to rebuild the site. It does nothing when
+the site is current. It runs in two places:
 
-Run once by hand:  .venv/bin/python pipeline/keeper.py
+  * in the cloud, around the clock: .github/workflows/live.yml runs `keeper.py --watch`, checking
+    every 5 minutes for ~5.5 hours, then starts its own successor (no laptop, no GitHub schedule);
+  * on this computer, every 15 minutes while the local FireCal server runs (a second safety net).
+
+Each check also restarts the cloud watcher if none is running, and switches the website schedule
+back on if GitHub has disabled it (GitHub does that after 60 days without repository activity).
+
+    .venv/bin/python pipeline/keeper.py              # one check
+    .venv/bin/python pipeline/keeper.py --watch 320  # check every 5 minutes for 320 minutes (cloud)
 """
 from __future__ import annotations
 
@@ -25,9 +32,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from app.constants import NRT_URL  # noqa: E402
 from pipeline.sync import WORKFLOW, gh, github_available  # noqa: E402
 
-INTERVAL = 15 * 60   # seconds between checks
-GRACE = 20           # minutes to leave GitHub's own schedule before stepping in
+WATCHER = "live.yml" # the cloud watcher workflow
+INTERVAL = 15 * 60   # seconds between checks on this computer
+WATCH_EVERY = 5 * 60 # seconds between checks in the cloud watcher
+GRACE = 20           # minutes to leave GitHub's own schedule before stepping in (this computer)
+WATCH_GRACE = 5      # the same, for the cloud watcher
 COOLDOWN = 30        # minutes between rebuild requests from the keeper
+ACTIVE = ("queued", "in_progress", "waiting", "pending", "requested")
 
 
 def nasa_updated() -> dt.datetime:
@@ -36,6 +47,8 @@ def nasa_updated() -> dt.datetime:
 
 
 def website_url() -> str:
+    if os.environ.get("FIRECAL_SITE_URL"):  # set by the cloud watcher (its key can't read Pages settings)
+        return os.environ["FIRECAL_SITE_URL"].rstrip("/") + "/"
     return json.loads(gh("api", "repos/{owner}/{repo}/pages"))["html_url"].rstrip("/") + "/"
 
 
@@ -47,9 +60,17 @@ def website_updated(url: str) -> dt.datetime | None:
         return None
 
 
-def build_in_flight() -> bool:
-    runs = json.loads(gh("run", "list", "--workflow", WORKFLOW, "--limit", "5", "--json", "status"))
-    return any(r["status"] in ("queued", "in_progress", "waiting", "pending", "requested") for r in runs)
+def build_in_flight(workflow: str = WORKFLOW) -> bool:
+    runs = json.loads(gh("run", "list", "--workflow", workflow, "--limit", "5", "--json", "status"))
+    return any(r["status"] in ACTIVE for r in runs)
+
+
+def ensure_watcher() -> str | None:
+    """Start the cloud watcher if none is running or queued (it normally hands over to itself)."""
+    if os.environ.get("FIRECAL_WATCHER") == "1" or build_in_flight(WATCHER):
+        return None
+    gh("workflow", "run", WATCHER)
+    return "cloud watcher was not running; started it"
 
 
 def ensure_schedule_enabled() -> str | None:
@@ -61,21 +82,27 @@ def ensure_schedule_enabled() -> str | None:
     return None
 
 
-def check_once(last_request: dt.datetime | None = None) -> tuple[str, dt.datetime | None]:
+def check_once(last_request: dt.datetime | None = None, grace: int = GRACE) -> tuple[str, dt.datetime | None]:
     """One check. Returns (what happened, time of the last rebuild request)."""
-    fixed = ensure_schedule_enabled()
-    msg, last = _check_freshness(last_request)
-    return (f"{fixed}; {msg}" if fixed else msg), last
+    notes = []
+    for fix in (ensure_schedule_enabled, ensure_watcher):
+        try:
+            if note := fix():
+                notes.append(note)
+        except Exception as e:  # never let a side check stop the freshness check
+            notes.append(f"{fix.__name__} skipped ({e.__class__.__name__})")
+    msg, last = _check_freshness(last_request, grace)
+    return "; ".join(notes + [msg]), last
 
 
-def _check_freshness(last_request: dt.datetime | None) -> tuple[str, dt.datetime | None]:
+def _check_freshness(last_request: dt.datetime | None, grace: int = GRACE) -> tuple[str, dt.datetime | None]:
     now = dt.datetime.now(dt.timezone.utc)
     nasa = nasa_updated()
     site = website_updated(website_url())
     if site and site >= nasa:
         return f"website is current (NASA {nasa:%H:%M} UTC)", last_request
-    if now - nasa < dt.timedelta(minutes=GRACE):
-        return f"NASA updated at {nasa:%H:%M} UTC; giving GitHub's schedule until {nasa + dt.timedelta(minutes=GRACE):%H:%M}", last_request
+    if now - nasa < dt.timedelta(minutes=grace):
+        return f"NASA updated at {nasa:%H:%M} UTC; giving GitHub's schedule until {nasa + dt.timedelta(minutes=grace):%H:%M}", last_request
     if build_in_flight():
         return "a website build is already queued or running", last_request
     if last_request and now - last_request < dt.timedelta(minutes=COOLDOWN):
@@ -103,5 +130,25 @@ def start(log=print):
     return True
 
 
+def watch(minutes: float, log=print):
+    """The cloud watcher: check every WATCH_EVERY seconds for `minutes`, then return (the workflow hands over)."""
+    os.environ["FIRECAL_WATCHER"] = "1"  # this process is the watcher; don't start another
+    end, last = time.time() + minutes * 60, None
+    while True:
+        try:
+            msg, last = check_once(last, grace=WATCH_GRACE)
+            log(f"{dt.datetime.now(dt.timezone.utc):%H:%M} {msg}")
+        except Exception as e:  # NASA or GitHub briefly unreachable: try again next time
+            log(f"{dt.datetime.now(dt.timezone.utc):%H:%M} check skipped ({e.__class__.__name__}: {e})")
+        if time.time() + WATCH_EVERY > end:
+            return
+        time.sleep(WATCH_EVERY)
+
+
 if __name__ == "__main__":
-    print(check_once()[0])
+    if sys.argv[1:2] in (["-h"], ["--help"]):
+        print(__doc__)
+    elif sys.argv[1:2] == ["--watch"]:
+        watch(float(sys.argv[2]), log=lambda m: print(m, flush=True))
+    else:
+        print(check_once()[0])
