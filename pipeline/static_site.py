@@ -8,6 +8,9 @@ Everything the server computes on request is precomputed here as plain files:
   site/data/tiles/<ty>_<tx>.bin.gz     every fire cell-day in a 2° tile at full 0.1° precision, so the
                                        browser can analyse ANY drawn box exactly (no snapping)
   site/data/map/<layer>/…              history map layers: 0.5° world overview + 0.1° detail in 10° tiles
+  site/data/own_cells.json             per country, its recorded fire cells that lie outside its border
+                                       (coasts, border strips, shapeless territories), so browsers count
+                                       live fires exactly like the live updater (app/static/live.js)
   build/cells_country.parquet          (yi, xi, country) for every fire cell, used by the live updater
   build/static_cells.parquet           cells dominated by industrial heat, masked in live counts
 
@@ -145,6 +148,23 @@ def build_box_tiles(store: Store, out: pathlib.Path, build: pathlib.Path):
     print(f"  {len(index)} box tiles, {sum(index.values()) / 1e6:.1f} MB", flush=True)
 
 
+def build_own_cells(out: pathlib.Path, build: pathlib.Path):
+    """Each country's recorded fire cells whose centre is outside its own border (see the docstring)."""
+    import shapely
+    from shapely.geometry import shape
+    cc = duckdb.execute(f"SELECT yi, xi, cid FROM '{(build / 'cells_country.parquet').as_posix()}' ORDER BY cid, yi, xi").df()
+    geoms = {f["properties"]["id"]: shape(f["geometry"])
+             for f in json.loads((RES / "shapes.geojson").read_text(encoding="utf-8"))["features"]}
+    own = {}
+    for cid, g in cc.groupby("cid"):
+        pts = shapely.points((g.xi.to_numpy() + 0.5) / CELL, (g.yi.to_numpy() + 0.5) / CELL)
+        outside = ~shapely.intersects(geoms[cid], pts) if cid in geoms else np.ones(len(g), bool)
+        if outside.any():
+            own[cid] = g[outside][["yi", "xi"]].astype(int).values.ravel().tolist()
+    write_json(out / "data" / "own_cells.json", own)
+    print(f"  own cells outside borders: {sum(map(len, own.values())) // 2} in {len(own)} countries", flush=True)
+
+
 def build_map_layers(store: Store, out: pathlib.Path, build: pathlib.Path):
     """History layers: all years, each year, each calendar month (mean per year).
 
@@ -227,6 +247,7 @@ def main():
     build_meta(store, out, version)
     build_calendars(store, out)
     build_box_tiles(store, out, build)
+    build_own_cells(out, build)
     build_map_layers(store, out, build)
     shutil.rmtree(build / "duckdb_tmp", ignore_errors=True)
     print("done", flush=True)

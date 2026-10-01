@@ -84,16 +84,15 @@
     return { meta, overview, index, tiles };
   }
 
-  /** Fire cell-days per complete day inside one country (border test as geo.js), like live.py's countries.json. */
-  function countryCells(live, feature, extent, geo = root.FireGeo) {
+  /** Fire cell-days per complete day in one country, like live.py's countries.json: cells whose centre
+   *  is inside its border (as geo.js) or in its own recorded cells outside the border (own_cells.json). */
+  function countryCells(live, feature, ownCells, geo = root.FireGeo) {
     const days = live.meta.complete_days, pos = new Map(days.map((d, i) => [d, i])), cells = days.map(() => 0), seen = new Map();
+    const own = new Set();
+    for (let i = 0; i + 1 < (ownCells || []).length; i += 2) own.add(key(ownCells[i], ownCells[i + 1]));
     const inside = (xi, yi) => {
       const k = key(yi, xi);
-      if (!seen.has(k)) {
-        const lon = (xi + 0.5) / CELL, lat = (yi + 0.5) / CELL;
-        seen.set(k, feature ? geo.pointTouches(feature, lon, lat)
-          : !!extent && lon >= extent[0] && lon <= extent[2] && lat >= extent[1] && lat <= extent[3]);
-      }
+      if (!seen.has(k)) seen.set(k, own.has(k) || (!!feature && geo.pointTouches(feature, (xi + 0.5) / CELL, (yi + 0.5) / CELL)));
       return seen.get(k);
     };
     for (const t of Object.values(live.tiles))

@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 import pipeline.live as live
+import pipeline.static_site as ss
 from app.constants import MAP_TILE
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -27,7 +28,7 @@ const shapes = JSON.parse(fs.readFileSync(process.argv[3], 'utf8')).features;
 const cd = L.parse(fs.readFileSync(inp.csv, 'utf8'), inp.staticCells);
 const lv = L.build(cd, inp.tileCells, inp.modified);
 const countries = {};
-for (const id of inp.countries) countries[id] = L.countryCells(lv, shapes.find((f) => f.properties.id === id), null, G);
+for (const id of inp.countries) countries[id] = L.countryCells(lv, shapes.find((f) => f.properties.id === id), inp.own[id], G);
 process.stdout.write(JSON.stringify({ meta: lv.meta, overview: lv.overview, index: lv.index, tiles: lv.tiles, countries }));
 """
 
@@ -54,12 +55,22 @@ def test_browser_live_data_matches_the_published_files(tmp_path):
     g = live.cells_from_csv(csv)
     masked = g.drop_duplicates(["yi", "xi"]).sample(25, random_state=1)[["yi", "xi"]]  # pretend these are gas flares
     duckdb.from_df(masked.astype("int16")).write_parquet(str(build / "static_cells.parquet"))
+    # each country's recorded cells: everything near it in this feed, so coasts and border strips
+    # outside the Natural Earth border count too (as on the server), plus a shapeless territory
+    cells = g.drop_duplicates(["yi", "xi"])[["yi", "xi"]]
+    near = lambda lat, lon: cells[((cells.yi / 10 - lat).abs() < 2.5) & ((cells.xi / 10 - lon).abs() < 2.5)]  # noqa: E731
+    own = pd.concat([near(9.1, 7.4).assign(cid="Nigeria"), near(35.0, 33.2).assign(cid="Cyprus"),
+                     near(52.1, 5.3).assign(cid="Netherlands"), near(-15.2, 28.3).assign(cid="Guadeloupe")])
+    duckdb.from_df(own).write_parquet(str(build / "cells_country.parquet"))
+    ss.build_own_cells(tmp_path / "site", build)
     modified = "2026-10-01T20:54:08+00:00"
     live.publish(g, out, build, modified)
 
     shapes = ROOT / "app" / "resources" / "shapes.geojson"
-    wanted = ["Nigeria", "Zambia", "Brazil", "Russian_Federation", "Cyprus", "South_Africa", "Netherlands", "Australia"]
-    inp = {"csv": str(csv), "staticCells": json.loads((out / "static_cells.json").read_text())["cells"],
+    wanted = ["Nigeria", "Zambia", "Brazil", "Russian_Federation", "Cyprus", "South_Africa", "Netherlands", "Australia", "Guadeloupe"]
+    own_cells = json.loads((tmp_path / "site" / "data" / "own_cells.json").read_text())
+    assert own_cells["Cyprus"] and own_cells["Guadeloupe"]  # the test really exercises cells outside borders
+    inp = {"csv": str(csv), "own": own_cells, "staticCells": json.loads((out / "static_cells.json").read_text())["cells"],
            "tileCells": MAP_TILE, "modified": modified, "countries": wanted}
     res = subprocess.run(["node", "-e", RUNNER, str(ROOT / "app" / "static" / "live.js"), str(ROOT / "app" / "static" / "geo.js"),
                           str(shapes)], input=json.dumps(inp), capture_output=True, text=True, check=True)

@@ -120,10 +120,10 @@
     if (!window.FireLive || navigator.connection?.saveData) return null;
     const nasa = await FireLive.nasaModified();
     if (!nasa || (lm && nasa - new Date(lm.source_last_modified) <= BEHIND_MS)) return null;
-    const [mask, ix] = await Promise.all([
-      fetchJSON("data/live/static_cells.json"), // without the gas-flare mask, keep the published copy
+    const [mask, own, ix] = await Promise.all([ // without the gas-flare mask or the own cells, keep the published copy
+      fetchJSON("data/live/static_cells.json"), fetchJSON("data/own_cells.json"),
       fetchJSON("data/live/tiles/index.json", { cache: "no-cache" }).catch(() => ({ tile_cells: 100 }))]);
-    return { ...FireLive.build(await FireLive.fetchParsed(mask.cells), ix.tile_cells, nasa.toISOString()), direct: true };
+    return { ...FireLive.build(await FireLive.fetchParsed(mask.cells), ix.tile_cells, nasa.toISOString()), own, direct: true };
   }
   const liveSource = () => direct ? Promise.resolve(direct) : once("livesrc", async () => {
     const lm = await fetchJSON("data/live/meta.json", { cache: "no-cache" }, 2).catch(() => null);
@@ -143,7 +143,7 @@
     const s = await liveSource();
     if (s.direct) return once(`livec:${id}`, async () => {
       const feature = (await shapes()).features.find((f) => f.properties.id === id);
-      return FireLive.countryCells(s, feature, META.countries.find((c) => c.id === id)?.extent);
+      return FireLive.countryCells(s, feature, s.own[id]);
     });
     const lc = await once("livecountries", () => fetchJSON("data/live/countries.json", { cache: "no-cache" }));
     return lc.countries[id]?.cells || days.map(() => 0);

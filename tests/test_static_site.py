@@ -24,6 +24,7 @@ def built(tmp_path_factory):
     ss.build_meta(store, out, "test")
     ss.build_calendars(store, out)
     ss.build_box_tiles(store, out, build)
+    ss.build_own_cells(out, build)
     ss.build_map_layers(store, out, build)
     return store, out, build
 
@@ -50,6 +51,7 @@ def test_site_files(built):
     for cid in store.ready:
         assert json.loads((out / "data" / "countries" / f"{cid}.json").read_text()) == store.analyze({"country": cid})
     assert (build / "cells_country.parquet").exists()
+    assert isinstance(json.loads((out / "data" / "own_cells.json").read_text()), dict)
     for layer in ("all", "y2010", "m01"):
         assert json.loads((out / "data" / "map" / layer / "index.json").read_text())["tiles"]
 
