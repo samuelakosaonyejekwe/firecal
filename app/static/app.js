@@ -633,9 +633,10 @@ function renderBriefing() {
   const c = d.critical, h = d.harmonization, n = state.now, st = nowStatus(n);
   const mu = d.monthly.normal, total = mu.reduce((a, v) => a + (v || 0), 0);
   const ranked = mu.map((v, i) => [v || 0, i]).sort((a, b) => b[0] - a[0]);
-  const busiest = ranked.slice(0, 3).map(([, i]) => MONTHS_LONG[i]);
+  const busiest = ranked.slice(0, 3).filter(([v]) => v > 0).map(([, i]) => MONTHS_LONG[i]); // months that burn at all
   const quiet = ranked.slice(-3).reverse().map(([, i]) => MONTHS_LONG[i]);
   const busyShare = total ? (ranked.slice(0, 3).reduce((a, r) => a + r[0], 0) / total) * 100 : 0;
+  const none = d.total_cell_days === 0; // e.g. the Maldives: no fire recorded by either sensor since 2000
   const ol = outlook();
   const yr = d.yearly, fit = linfit(yr.years, yr.h);
   const trend = fit && fit.mean > 0 ? (fit.slope * 10 / fit.mean) * 100 : null;
@@ -655,15 +656,17 @@ function renderBriefing() {
   const B = {
     responders: [
       state.nowLoading ? li(`<b>Right now:</b> <span class="muted">checking this week's live fires…</span>`) :
-      st ? li(`<b>Right now:</b> ${fmt(n.total)} fire cell-days this week, <b>${esc(st.label.toLowerCase())}</b> (${ordinal(n.percentile)} percentile for these dates).`) : "",
+      st ? li(`<b>Right now:</b> ${fmt(n.total)} fire cell-day${n.total === 1 ? "" : "s"} this week, <b>${esc(st.label.toLowerCase())}</b> (${ordinal(n.percentile)} percentile for these dates).`) : "",
       li(`<b>Outlook from ${monthName}:</b> ${olText}`),
-      c ? li(`<b>Critical period:</b> ${c.start} → ${c.end}, peaking around <b>${c.peak}</b>. Highest-risk weeks: ${d.top_weeks.map(esc).join(", ")}.`) : li("No regular fire season: burning here is sporadic."),
-      li(`<b>Busiest months:</b> ${busiest.join(", ")} (${fmt(busyShare)}% of a normal year's burning).`),
+      c ? li(`<b>Critical period:</b> ${c.start} → ${c.end}, peaking around <b>${c.peak}</b>. Highest-risk weeks: ${d.top_weeks.map(esc).join(", ")}.`) : none ? "" : li("No regular fire season: burning here is sporadic."),
+      none ? li("<b>No fires recorded</b> here by MODIS or VIIRS since November 2000.")
+        : busiest.length ? li(`<b>Busiest months:</b> ${busiest.join(", ")} (${fmt(busyShare)}% of a normal year's burning).`) : "",
     ],
     managers: [
       c ? li(`<b>Plan around the season:</b> ${c.length} days long on average (${c.start} – ${c.end}); ${lfit ? `it has been getting <b>${lfit.slope > 0 ? "longer" : "shorter"}</b> by ~${fmt(Math.abs(lfit.slope * 10))} days per decade${lc}.` : ""}`) : "",
       sfit ? li(`<b>Season onset</b> is shifting <b>${sfit.slope < 0 ? "earlier" : "later"}</b> by ~${fmt(Math.abs(sfit.slope * 10))} days per decade${lc}.`) : "",
-      li(`<b>Quietest months</b> (windows for fuel management and prescribed burning, subject to local rules): ${quiet.join(", ")}.`),
+      none ? li("<b>No fires recorded</b> here by MODIS or VIIRS since November 2000, so there is no fire season to plan around.")
+        : li(`<b>Quietest months</b> (windows for fuel management and prescribed burning, subject to local rules): ${quiet.join(", ")}.`),
       trend != null ? li(`<b>Long-term trend:</b> annual burning is ${Math.abs(trend) < 5 ? "roughly stable" : trend > 0 ? `<b>rising ~${fmt(trend)}%</b>` : `<b>falling ~${fmt(-trend)}%</b>`} per decade (harmonized 2001–${d.range.last_full})${lc}.`) : "",
       recent.length ? li(`<b>Recent unusual months:</b> ${recent.slice(0, 4).map((u) => `${MONTHS[u.month - 1]} ${u.year} (${signed(u.z)}σ)`).join(", ")}.`) : li("No unusual months (±2σ) in the last five years."),
     ],
