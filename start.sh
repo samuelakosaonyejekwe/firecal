@@ -14,6 +14,7 @@ if [ ! -x .venv/bin/uvicorn ]; then
 fi
 mkdir -p data
 setsid nohup .venv/bin/uvicorn app.main:app --port "${PORT}" >> data/server.log 2>&1 < /dev/null &
+echo $! > data/server.pid
 for _ in $(seq 1 60); do
   if curl -fs "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1; then
     echo "FireCal is running: http://127.0.0.1:${PORT}"

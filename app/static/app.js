@@ -299,6 +299,7 @@ function hideTip() { $("tip").style.display = "none"; }
 function setBusy(on, msg) {
   $("content").setAttribute("aria-busy", String(on));
   if (msg) $("loading").innerHTML = `<div class="loading-box">${msg}</div>`;
+  if (!on) syncNav();
 }
 
 function banner(html, kind = "info") {
@@ -314,7 +315,7 @@ async function loadAOI() {
   $("aoiSub").textContent = a.country ? "Country" : "Custom area";
   banner(null);
   setBusy(true, `<span class="spinner"></span> Analyzing ${esc(name)}…`);
-  state.now = null; renderNowcast();
+  state.now = null; state.nowLoading = true; renderNowcast();
   loadNowcast(a, token);
   try {
     const data = await api(`/api/calendar?${aoiQuery(a)}`);
@@ -385,6 +386,7 @@ async function loadNowcast(a, token) {
     if (token !== state.req) return;
     state.now = n.needs_data ? null : n;
   } catch (_) { state.now = null; }
+  state.nowLoading = false;
   renderNowcast();
   if (state.data) renderBriefing();
 }
@@ -427,10 +429,67 @@ function setupLazy() {
   document.querySelectorAll("[data-render]").forEach((el) => io.observe(el));
 }
 
+// ───────────────────────── section navigation ─────────────────────────
+function setupNav() {
+  const nav = $("secnav"), links = [...nav.querySelectorAll("a[data-sec]")];
+  let lockUntil = 0, current = null;
+  const setOn = (id) => {
+    if (id === current) return;
+    current = id;
+    for (const l of links) {
+      const on = l.dataset.sec === id;
+      l.classList.toggle("on", on);
+      if (on) {
+        l.setAttribute("aria-current", "true");
+        // keep the active chip visible inside the menu without scrolling the page
+        const left = l.offsetLeft - (nav.clientWidth - l.offsetWidth) / 2;
+        nav.scrollTo({ left: Math.max(0, left), behavior: "smooth" });
+      } else l.removeAttribute("aria-current");
+    }
+  };
+  const offset = () => nav.getBoundingClientRect().bottom + 24;
+  const spy = () => {
+    if (performance.now() < lockUntil) return;
+    const line = offset();
+    let active = null;
+    for (const l of links) {
+      const el = $(l.dataset.sec);
+      if (!el || el.hidden || l.hidden) continue;
+      if (el.getBoundingClientRect().top <= line) active = l.dataset.sec; // last section whose top has passed the menu
+    }
+    if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) active = links.filter((l) => !l.hidden).at(-1).dataset.sec;
+    setOn(active || links.find((l) => !l.hidden)?.dataset.sec);
+  };
+  let ticking = false;
+  addEventListener("scroll", () => { if (!ticking) { ticking = true; requestAnimationFrame(() => { ticking = false; spy(); }); } }, { passive: true });
+  addEventListener("resize", spy);
+  nav.addEventListener("click", (e) => {
+    const a = e.target.closest("a"); if (!a) return;
+    e.preventDefault();
+    if (a.dataset.top !== undefined) { scrollTo({ top: 0, behavior: "smooth" }); return; }
+    const el = $(a.dataset.sec);
+    if (!el || el.hidden) return;
+    setOn(a.dataset.sec);
+    lockUntil = performance.now() + 1250; // don't let the spy flicker during the smooth scroll
+    const target = () => Math.max(0, scrollY + el.getBoundingClientRect().top - (nav.getBoundingClientRect().height + parseFloat(getComputedStyle(nav).top) + 12));
+    scrollTo({ top: target(), behavior: "smooth" });
+    // content above can still grow while we scroll (live data arriving): settle on the exact spot
+    setTimeout(() => { const y = target(); if (Math.abs(y - scrollY) > 6) scrollTo({ top: y, behavior: "smooth" }); }, 750);
+    setTimeout(spy, 1300);
+  });
+  setupNav.spy = spy;
+}
+function syncNav() {
+  $("secnav").querySelector('[data-sec="nowCard"]').hidden = $("nowCard").hidden;
+  $("secnav").classList.toggle("off", $("results").hidden);
+  setupNav.spy?.();
+}
+
 function renderAll() {
   if (!state.data) return;
   renderKPIs(); renderBriefing(); renderCritical(); renderUnusual(); renderCV();
   markAllDirty();
+  syncNav();
 }
 
 function base() {
@@ -476,8 +535,18 @@ function nowStatus(n) {
 }
 function renderNowcast() {
   const n = state.now;
-  if (!n || !n.available) { $("nowCard").hidden = true; return; }
-  $("nowCard").hidden = false;
+  if (state.nowLoading) { // reserve the card's space so the page doesn't jump when live data lands
+    $("nowCard").hidden = false; $("nowCard").classList.add("is-loading");
+    $("nowCard").style.setProperty("--now-c", css("--accent"));
+    $("nowSub").innerHTML = `<span class="spinner"></span>Checking this week's live NASA fire detections…`;
+    $("nowStatus").innerHTML = "";
+    $("nowFigs").innerHTML = ["This week", "Typical for these dates", "Rank"].map((l) => `<div><span>${l}</span><b class="skel">&nbsp;</b><em>&nbsp;</em></div>`).join("");
+    $("nowBars").innerHTML = Array.from({ length: 6 }, () => `<div class="nb"><b>&nbsp;</b><i class="skel" style="height:40%"></i><span>&nbsp;</span></div>`).join("");
+    syncNav(); return;
+  }
+  $("nowCard").classList.remove("is-loading");
+  if (!n || !n.available) { $("nowCard").hidden = true; syncNav(); return; }
+  $("nowCard").hidden = false; syncNav();
   const d0 = n.days[0], d1 = n.days[n.days.length - 1];
   $("nowSub").textContent = `${niceDate(d0, false)} – ${niceDate(d1)} · provisional VIIRS near-real-time · updated ${n.fetched_at ? new Date(n.fetched_at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }) : "–"}`;
   const st = nowStatus(n);
@@ -561,6 +630,7 @@ function renderBriefing() {
 
   const B = {
     responders: [
+      state.nowLoading ? li(`<b>Right now:</b> <span class="muted">checking this week's live fires…</span>`) :
       st ? li(`<b>Right now:</b> ${fmt(n.total)} fire cell-days this week, <b>${esc(st.label.toLowerCase())}</b> (${ordinal(n.percentile)} percentile for these dates).`) : "",
       li(`<b>Outlook from ${monthName}:</b> ${olText}`),
       c ? li(`<b>Critical period:</b> ${c.start} → ${c.end}, peaking around <b>${c.peak}</b>. Highest-risk weeks: ${d.top_weeks.map(esc).join(", ")}.`) : li("No regular fire season: burning here is sporadic."),
@@ -888,6 +958,7 @@ async function init() {
   const t = store.get("firecal-theme");
   if (t) document.documentElement.dataset.theme = t;
   setupLazy();
+  setupNav();
   try {
     await loadMeta();
   } catch (e) {

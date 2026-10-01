@@ -30,7 +30,7 @@ nrt = NRTFeed(DATA)
 nrt.start()
 
 # cache-busting version for static assets: changes whenever a file changes
-VERSION = hashlib.sha1(b"".join(p.read_bytes() for p in sorted(STATIC.glob("*")) if p.is_file())).hexdigest()[:10]
+VERSION = hashlib.sha1(b"".join(p.read_bytes() for p in sorted(STATIC.rglob("*")) if p.is_file())).hexdigest()[:10]
 
 
 def cached(data, seconds: int):
@@ -91,7 +91,8 @@ def meta():
 def calendar(country: str | None = None, bbox: str | None = None):
     aoi = parse_aoi(country, bbox)
     try:
-        return cached(store.analyze(aoi), 3600)
+        return Response(store.analyze_bytes(aoi), media_type="application/json",
+                        headers={"Cache-Control": "public, max-age=3600"})
     except NeedsData as e:
         return needs_data(e)
 

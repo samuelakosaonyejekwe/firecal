@@ -71,7 +71,7 @@ NASA FIRMS yearly country CSVs ──► pipeline/fetch.py ──► pipeline/bu
 NASA FIRMS 7-day NRT feed (refreshed every 3 h) ──► app/nrt.py
                           app/analysis.py (DuckDB + pandas: harmonize, calendar, seasons, anomalies, nowcast)
                           app/main.py (FastAPI: gzip, HTTP caching, on-demand job queue, /docs)
-                          app/static (MapLibre GL + ECharts, no build step, service worker)
+                          app/static (MapLibre GL + a slim custom ECharts bundle in static/vendor, service worker)
 ```
 
 API: `/api/calendar?country=Kenya` or `?bbox=w,s,e,n`, `/api/nowcast`, `/api/grid`, `/api/live`,

@@ -327,16 +327,20 @@ class Store:
         return self._mem.put(key, (day, cal, ids, missing, bbox, label))
 
     # --------------------------------------------------------------- calendar
-    def analyze(self, aoi) -> dict:
+    def analyze_bytes(self, aoi) -> bytes:
+        """Analysis as ready-to-send JSON bytes, served straight from the disk cache when possible."""
         _, ids, _, _, _ = self.resolve(aoi)
         cache = self.cache_dir / f"cal_{hashlib.sha1((json.dumps(aoi, sort_keys=True) + self.version(ids)).encode()).hexdigest()[:20]}.json"
         if cache.exists():
-            return json.loads(cache.read_text())
-        out = self._analyze(aoi)
-        tmp = cache.with_suffix(".tmp")
-        tmp.write_text(json.dumps(out, separators=(",", ":")))
+            return cache.read_bytes()
+        raw = json.dumps(self._analyze(aoi), separators=(",", ":")).encode()
+        tmp = cache.with_suffix(f".{threading.get_ident()}.tmp")
+        tmp.write_bytes(raw)
         tmp.replace(cache)
-        return out
+        return raw
+
+    def analyze(self, aoi) -> dict:
+        return json.loads(self.analyze_bytes(aoi))
 
     def _analyze(self, aoi) -> dict:
         day, cal, ids, missing, bbox, label = self.series(aoi)
@@ -464,6 +468,10 @@ class Store:
         key = (cid, self._ready.get(cid), year, month)
         if key in self._grids:
             return self._grids[key]
+        # disk cache survives restarts; invalidated when the country's grid is rebuilt
+        disk = self.cdir / cid / "grid_cache" / f"{year or 'all'}_{month or 'all'}.parquet"
+        if disk.exists() and disk.stat().st_mtime >= self.path(cid).stat().st_mtime:
+            return self._grids.put(key, pd.read_parquet(disk))
         _, cal, *_ = self.series({"country": cid})
         k, kt = cal["k_all"] or 1.0, cal["k_terra_all"] or 1.0
         where = []
@@ -479,6 +487,10 @@ class Store:
             FROM '{self.path(cid)}' WHERE true {w} GROUP BY xi, yi HAVING val > 0""")
         if not year:
             df["val"] /= (self.end.year - MODIS_START.year + 1)
+        disk.parent.mkdir(exist_ok=True)
+        tmp = disk.with_suffix(f".{threading.get_ident()}.tmp")
+        df.to_parquet(tmp)
+        tmp.replace(disk)
         return self._grids.put(key, df)
 
     def grid(self, bbox, year=None, month=None) -> dict:

@@ -14,10 +14,10 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
   <link rel="stylesheet" href="/static/styles.css?v={{v}}">
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
-  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
+  <script defer src="/static/vendor/echarts.min.js?v={{v}}"></script>
   <script defer src="/static/app.js?v={{v}}"></script>
 </head>
-<body>
+<body id="top">
   <header class="topbar">
     <div class="brand">
       <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 2c1 3.5-1.6 5.3-1.6 8.2 0 1.3.8 2.3 2 2.3 1.6 0 2.3-1.5 2-3.6 2.5 1.8 4 4.4 4 7.1A6.4 6.4 0 0 1 12 22a6.4 6.4 0 0 1-6.4-6c0-4.6 4.1-7 6.4-14Z"/></svg>
@@ -102,9 +102,21 @@
         </div>
       </section>
 
+      <nav class="secnav" id="secnav" aria-label="Sections">
+        <a href="#nowCard" data-sec="nowCard">This week</a>
+        <a href="#sec-overview" data-sec="sec-overview">Overview</a>
+        <a href="#sec-calendar" data-sec="sec-calendar">Calendar</a>
+        <a href="#sec-critical" data-sec="sec-critical">Critical periods</a>
+        <a href="#sec-seasons" data-sec="sec-seasons">Seasons</a>
+        <a href="#dailyCard" data-sec="dailyCard">Daily</a>
+        <a href="#sec-trends" data-sec="sec-trends">Trends</a>
+        <a href="#sec-method" data-sec="sec-method">Harmonization</a>
+        <a href="#top" class="totop" data-top aria-label="Back to top">↑</a>
+      </nav>
+
       <div id="banner" class="banner" hidden></div>
 
-      <section class="card now-card" id="nowCard" hidden>
+      <section class="card now-card sec" id="nowCard" hidden>
         <div class="card-head">
           <div>
             <h2>Early warning: this week</h2>
@@ -119,6 +131,7 @@
       </section>
 
       <div id="results">
+        <div id="sec-overview" class="sec">
         <section class="kpis" id="kpis"></section>
 
         <section class="card brief-card">
@@ -135,8 +148,9 @@
           </div>
           <ul class="brief" id="briefList"></ul>
         </section>
+        </div>
 
-        <section class="card">
+        <section class="card sec" id="sec-calendar">
           <div class="card-head">
             <div>
               <h2>Burning activity calendar</h2>
@@ -151,7 +165,7 @@
           <div class="legend" id="calLegend"></div>
         </section>
 
-        <div class="grid2">
+        <div class="grid2 sec" id="sec-critical">
           <section class="card">
             <h2>Critical periods</h2>
             <p class="sub">Typical fire season for this area, median of all seasons</p>
@@ -164,7 +178,7 @@
           </section>
         </div>
 
-        <section class="card">
+        <section class="card sec" id="sec-seasons">
           <div class="card-head">
             <div>
               <h2>Seasonal profile</h2>
@@ -176,7 +190,7 @@
           <div class="chart" id="chProfile" data-render="profile"></div>
         </section>
 
-        <section class="card" id="dailyCard">
+        <section class="card sec" id="dailyCard">
           <div class="card-head">
             <div>
               <h2>Daily calendar</h2>
@@ -187,7 +201,7 @@
           <div class="chart short" id="chDaily" data-render="daily"></div>
         </section>
 
-        <div class="grid2">
+        <div class="grid2 sec" id="sec-trends">
           <section class="card">
             <h2>Season timing</h2>
             <p class="sub">Bar = 10%→90% of the season's burning; dot = peak</p>
@@ -200,6 +214,7 @@
           </section>
         </div>
 
+        <div id="sec-method" class="sec">
         <section class="card">
           <h2>Why harmonization matters</h2>
           <p class="sub">Annual fire cell-days. Raw MODIS sees several times fewer fires than VIIRS; the harmonized record rescales MODIS so the whole record is one consistent series (it equals VIIRS from 2012)</p>
@@ -219,6 +234,7 @@
             <p class="sub">Each year predicted from MODIS with that year held out</p>
             <div id="cvTable" class="table-wrap"></div>
           </section>
+        </div>
         </div>
       </div>
       <div class="loading" id="loading">Loading…</div>
