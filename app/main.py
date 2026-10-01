@@ -34,6 +34,9 @@ async def lifespan(_app):
     # background work starts with the server, not on import (tests and tools import this module)
     if os.environ.get("FIRECAL_NO_LIVE") != "1":
         nrt.start()
+        # backs up GitHub's best-effort schedule: rebuild the website when it falls behind NASA
+        from pipeline import keeper
+        keeper.start(log=log.warning)
     yield
 
 

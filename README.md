@@ -32,7 +32,7 @@ compares with every past year.
 | Address | https://samuelakosaonyejekwe.github.io/firecal/ | http://127.0.0.1:8765 |
 | Countries | every country published to the `firecal-data` release | any country on demand: fetched from GitHub if published, otherwise built from NASA and published |
 | Drawn boxes | analysed in the browser from 0.1° fire tiles (up to 20° × 20°) | analysed on the server (up to ~70° × 70°) |
-| Live fires | GitHub checks NASA every 15 min and republishes when NASA posts new data | refreshed every 3 h |
+| Live fires | GitHub checks NASA every 15 min and republishes when NASA posts new data; while the local server runs it also asks GitHub to rebuild if the site falls behind NASA (`pipeline/keeper.py`), and the app flags live data older than 6 h | refreshed every 3 h |
 
 Both use the same harmonization: `app/analysis.py` (Python) and `app/static/engine.js` (browser)
 are checked against each other by `tests/test_engine_parity.py` on every change.
@@ -115,6 +115,7 @@ NASA FIRMS 7-day NRT feed ──► app/nrt.py (server) / pipeline/live.py (webs
 
 pipeline/world.py + pipeline/sync.py ──► GitHub release "firecal-data" ──► .github/workflows/pages.yml
                       ──► tests ──► pipeline/static_site.py + pipeline/live.py ──► GitHub Pages
+pipeline/keeper.py (local server: rebuild the website if it falls behind NASA, e.g. when GitHub's schedule is delayed)
 pipeline/boundaries.py (Natural Earth → app/resources), pipeline/prior.py (→ app/resources/prior.json)
 ```
 

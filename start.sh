@@ -13,6 +13,10 @@ if [ ! -x .venv/bin/uvicorn ]; then
   python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt
 fi
 mkdir -p data
+# keep the log from growing forever: roll it over past 5 MB (one previous copy is kept)
+if [ -f data/server.log ] && [ "$(stat -c %s data/server.log)" -gt 5000000 ]; then
+  mv -f data/server.log data/server.log.1
+fi
 setsid nohup .venv/bin/uvicorn app.main:app --port "${PORT}" >> data/server.log 2>&1 < /dev/null &
 echo $! > data/server.pid
 for _ in $(seq 1 60); do
