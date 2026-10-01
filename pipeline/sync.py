@@ -156,6 +156,16 @@ def rebuild(cid: str, store: GitHubStore | None, progress=None) -> tuple[str, bo
     return "rebuilt with new NASA years", False
 
 
+def drop_raw(cid: str):
+    """Delete leftover raw NASA CSVs (and partial downloads) for a country that is now processed."""
+    raw = DATA / "raw" / cid
+    if raw.is_dir() and (DATA / "countries" / cid / FILES[0]).exists():
+        for f in list(raw.glob("*.csv")) + list(raw.glob("*.part")):
+            f.unlink()
+        if not any(raw.iterdir()):
+            raw.rmdir()
+
+
 def sync_country(cid: str, store: GitHubStore | None, progress=None, skip_published=False) -> tuple[str, bool]:
     """Make this computer (and GitHub, if available) hold the processed country.
 
@@ -180,6 +190,7 @@ def sync_country(cid: str, store: GitHubStore | None, progress=None, skip_publis
         return "local", False
     if store and store.has(cid):
         store.download(cid)
+        drop_raw(cid)  # an interrupted NASA download is superseded by the published country
         return "downloaded from GitHub", False
     fetch_country(cid, progress=progress)
     build_country(cid, keep_raw=False)

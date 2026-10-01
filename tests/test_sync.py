@@ -95,6 +95,18 @@ def test_remote_only_is_downloaded_not_rebuilt(env):
     assert (root / "Mali" / "grid_daily.parquet").read_bytes() == b"mali"
 
 
+def test_interrupted_nasa_download_is_cleared_once_published_copy_arrives(env):
+    fake, root, _ = env
+    fake("release", "create")
+    (fake.dir / "Russian_Federation.grid_daily.parquet").write_bytes(b"russia")
+    raw = root.parent / "raw" / "Russian_Federation"
+    raw.mkdir(parents=True)
+    (raw / "modis_2001_Russian_Federation.csv").write_text("x")
+    (raw / "modis_2002_Russian_Federation.csv.part").write_text("x")
+    how, _ = sync.sync_country("Russian_Federation", sync.GitHubStore())
+    assert "downloaded" in how and not raw.exists()
+
+
 def test_newer_copy_wins_both_ways(env):
     fake, root, _ = env
     fake("release", "create")
