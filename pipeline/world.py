@@ -21,7 +21,7 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-from pipeline.fetch import DiskSpaceLow, latest_archive_year  # noqa: E402
+from pipeline.fetch import latest_archive_year  # noqa: E402
 from pipeline.sync import GitHubStore, archive_through, github_available, rebuild, sync_country  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -81,9 +81,6 @@ def main():
             published += changed
             pending += changed
             print(f"[{i}/{len(ids)}] {cid}: {how} ({time.time() - t:.0f}s)", flush=True)
-        except DiskSpaceLow as e:  # stop cleanly; nothing is lost and the next run resumes here
-            print(f"[{i}/{len(ids)}] {cid}: {e}", flush=True)
-            break
         except Exception as e:  # tiny territories may have no VIIRS archive at all
             failed.append(cid)
             print(f"[{i}/{len(ids)}] {cid} FAILED: {e}", flush=True)

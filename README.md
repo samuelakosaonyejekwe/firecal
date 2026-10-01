@@ -51,10 +51,7 @@ For each country it uses the cheapest source: this computer → the `firecal-dat
 processed, then published with your own `gh` login). If a country exists in both places but differs,
 the newer copy wins. It then asks GitHub to rebuild the website, so **your computer, the repository
 and the website all end up with the same countries**. Raw NASA files are deleted as it goes
-(keep ~5 GB free). Downloads pause automatically, losing nothing, if free space would drop below
-3 GB (under WSL this watches Windows' C: drive, where Ubuntu's disk lives; change the limit with
-`FIRECAL_MIN_FREE_GB`); run the same command again to resume. Logic and tests: `pipeline/sync.py`,
-`pipeline/fetch.py`, `tests/test_sync.py`.
+(keep ~5 GB free). Logic and tests: `pipeline/sync.py`, `tests/test_sync.py`.
 
 ## Run it locally
 
