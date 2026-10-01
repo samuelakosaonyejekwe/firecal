@@ -19,7 +19,6 @@ back on if GitHub has disabled it (GitHub does that after 60 days without reposi
 from __future__ import annotations
 
 import datetime as dt
-import email.utils
 import json
 import os
 import pathlib
@@ -29,7 +28,7 @@ import time
 import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-from app.constants import NRT_URL  # noqa: E402
+from app.feeds import newest  # noqa: E402
 from pipeline.sync import WORKFLOW, gh, github_available  # noqa: E402
 
 WATCHER = "live.yml" # the cloud watcher workflow
@@ -42,8 +41,8 @@ ACTIVE = ("queued", "in_progress", "waiting", "pending", "requested")
 
 
 def nasa_updated() -> dt.datetime:
-    with urllib.request.urlopen(urllib.request.Request(NRT_URL, method="HEAD"), timeout=60) as r:
-        return email.utils.parsedate_to_datetime(r.headers["Last-Modified"])
+    """When NASA first published its current data (either server; re-stamps of the same file don't count)."""
+    return newest()[1]
 
 
 def website_url() -> str:

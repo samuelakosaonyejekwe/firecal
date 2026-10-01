@@ -15,7 +15,6 @@ Usage:  python pipeline/live.py --site site --build build [--force]
 """
 import argparse
 import datetime as dt
-import email.utils
 import json
 import pathlib
 import sys
@@ -30,20 +29,16 @@ from shapely.geometry import shape
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from app.constants import CELL, MAP_TILE, NRT_URL as URL  # noqa: E402
+from app.constants import CELL, MAP_TILE  # noqa: E402
+from app.feeds import newest  # noqa: E402
 
 MAX_OVERVIEW = 15000
 
 
-def source_last_modified() -> str:
-    with urllib.request.urlopen(urllib.request.Request(URL, method="HEAD"), timeout=60) as r:
-        return email.utils.parsedate_to_datetime(r.headers["Last-Modified"]).isoformat()
-
-
-def fetch_cells() -> pd.DataFrame:
+def fetch_cells(url: str) -> pd.DataFrame:
     with tempfile.TemporaryDirectory() as tmp:
         csv = pathlib.Path(tmp) / "feed.csv"
-        urllib.request.urlretrieve(URL, csv)
+        urllib.request.urlretrieve(url, csv)
         return cells_from_csv(csv)
 
 
@@ -71,16 +66,17 @@ def main():
     site, build = pathlib.Path(args.site), pathlib.Path(args.build)
     out = site / "data" / "live"
 
-    modified = source_last_modified()
+    url, first, size = newest()  # whichever NASA server has the newest data (app/feeds.py)
+    modified = first.isoformat()
     old = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
     if not args.force and old.get("source_last_modified") == modified:
         print(f"NASA feed unchanged since {modified}; nothing to do")
         sys.exit(3)
 
-    publish(fetch_cells(), out, build, modified)
+    publish(fetch_cells(url), out, build, modified, size)
 
 
-def publish(g: pd.DataFrame, out: pathlib.Path, build: pathlib.Path, modified: str):
+def publish(g: pd.DataFrame, out: pathlib.Path, build: pathlib.Path, modified: str, size: int | None = None):
     """Write the live files from fire cell-days (see the module docstring)."""
     g["d"] = pd.to_datetime(g["d"])
     static = build / "static_cells.parquet"
@@ -129,7 +125,7 @@ def publish(g: pd.DataFrame, out: pathlib.Path, build: pathlib.Path, modified: s
     write(out / "countries.json", {"days": complete, "countries": {
         cid: {"cells": [int(v) for v in row], "frp": round(float(frp.get(cid, 0)), 0)} for cid, row in per.iterrows()}})
 
-    write(out / "meta.json", {"source_last_modified": modified, "days": iso, "complete_days": complete,
+    write(out / "meta.json", {"source_last_modified": modified, "source_bytes": size, "days": iso, "complete_days": complete,
                               "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"),
                               "detections": int(g.n.sum()), "static_masked": static.exists()})
     print(f"live: {len(g)} cell-days, {len(tiles)} tiles, {len(per)} countries, NASA updated {modified}")

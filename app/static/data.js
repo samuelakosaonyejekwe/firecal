@@ -118,8 +118,11 @@
   let direct = null;
   async function upgradeFromNasa(lm) {
     if (!window.FireLive || navigator.connection?.saveData) return null;
-    const nasa = await FireLive.nasaModified();
-    if (!nasa || (lm && nasa - new Date(lm.source_last_modified) <= BEHIND_MS)) return null;
+    const head = await FireLive.nasaHead(), nasa = head?.modified;
+    if (!nasa) return null;
+    // same file as the published copy (a server re-stamping unchanged data): nothing new
+    if (lm && head.size && lm.source_bytes && head.size === lm.source_bytes) return null;
+    if (lm && nasa - new Date(lm.source_last_modified) <= BEHIND_MS) return null;
     const [mask, own, ix] = await Promise.all([ // without the gas-flare mask or the own cells, keep the published copy
       fetchJSON("data/live/static_cells.json"), fetchJSON("data/own_cells.json"),
       fetchJSON("data/live/tiles/index.json", { cache: "no-cache" }).catch(() => ({ tile_cells: 100 }))]);

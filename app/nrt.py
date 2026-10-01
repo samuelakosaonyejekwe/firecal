@@ -14,7 +14,8 @@ import urllib.request
 import duckdb
 import pandas as pd
 
-from .constants import CELL, NRT_URL as URL
+from .constants import CELL
+from .feeds import newest
 
 REFRESH = 3 * 3600
 
@@ -31,7 +32,7 @@ class NRTFeed:
 
     def _refresh(self):
         csv = self.dir / "feed.csv.part"
-        urllib.request.urlretrieve(URL, csv)
+        urllib.request.urlretrieve(newest()[0], csv)  # whichever NASA server has the newest data
         tmp = self.path.with_suffix(".tmp")
         with duckdb.connect() as con:
             con.execute(f"""

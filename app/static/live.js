@@ -118,16 +118,16 @@
     return parse(await r.text(), staticCells);
   }
 
-  async function nasaModified(timeoutMs = 8000) { // when NASA last updated the feed (a few hundred bytes)
+  async function nasaHead(timeoutMs = 8000) { // {modified, size} of NASA's current file (a few hundred bytes)
     const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), timeoutMs);
     try {
       const r = await fetch(FEED, { method: "HEAD", cache: "no-store", signal: ctl.signal });
-      const lm = r.ok && r.headers.get("Last-Modified");
-      return lm ? new Date(lm) : null;
+      const lm = r.ok && r.headers.get("Last-Modified"), size = +r.headers.get("Content-Length") || null;
+      return lm ? { modified: new Date(lm), size } : null;
     } catch (e) { return null; } finally { clearTimeout(t); }
   }
 
-  const api = { FEED, parse, build, countryCells, quantile, fetchParsed, nasaModified };
+  const api = { FEED, parse, build, countryCells, quantile, fetchParsed, nasaHead };
   if (typeof WorkerGlobalScope !== "undefined" && root instanceof WorkerGlobalScope) {
     root.onmessage = async (e) => {
       try {

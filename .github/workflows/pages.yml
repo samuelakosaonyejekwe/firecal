@@ -21,9 +21,6 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
-env:
-  NRT_URL: https://firms.modaps.eosdis.nasa.gov/data/active_fire/suomi-npp-viirs-c2/csv/SUOMI_VIIRS_C2_Global_7d.csv
-
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -41,7 +38,8 @@ jobs:
         run: |
           data=$(gh release view firecal-data --json assets --jq '[.assets[] | .name + "@" + .updatedAt] | sort | join(",")' 2>/dev/null | sha1sum | cut -c1-16)
           code=$(git ls-files -s app pipeline tests requirements.txt requirements-dev.txt | sha1sum | cut -c1-16)
-          nasa=$(curl -sfI "$NRT_URL" | tr -d '\r' | awk -F': ' 'tolower($1)=="last-modified"{print $2}' | sha1sum | cut -c1-16)
+          # NASA's data version (either server; a re-stamped unchanged file doesn't count): app/feeds.py
+          nasa=$(python3 app/feeds.py 2>/dev/null | cut -d' ' -f1,2 | sha1sum | cut -c1-16)
           echo "site=site-$data-$code" >> "$GITHUB_OUTPUT"
           echo "published=published-$data-$code-$nasa" >> "$GITHUB_OUTPUT"
 

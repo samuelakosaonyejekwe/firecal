@@ -32,8 +32,8 @@ BOX_TILE = 20    # 2° tiles of every fire cell-day, for drawn boxes
 MAP_TILE = 100   # 10° tiles for map layers and live fires
 OVERVIEW = 5     # 0.5° world overview for map layers
 
-# NASA FIRMS near-real-time feed (VIIRS S-NPP, same sensor as the archive reference)
-NRT_URL = "https://firms.modaps.eosdis.nasa.gov/data/active_fire/suomi-npp-viirs-c2/csv/SUOMI_VIIRS_C2_Global_7d.csv"
+# NASA FIRMS near-real-time feed (VIIRS S-NPP, same sensor as the archive reference): see app/feeds.py,
+# which picks the server with the newest data
 
 # Worldwide MODIS->VIIRS calibration prior. Fixed and versioned (app/resources/prior.json,
 # written by pipeline/prior.py) so an area's results never depend on which other countries
