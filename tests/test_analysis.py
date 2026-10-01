@@ -81,3 +81,31 @@ def test_ocean_box_has_nothing(store):
     with pytest.raises(NeedsData) as e:
         store.analyze({"bbox": [-30, -30, -25, -25]})
     assert e.value.missing == []
+
+
+def test_multi_country_box_counts_shared_border_cells_once(tmp_path):
+    """The fast multi-file daily query equals the full merge, including cells present in several files."""
+    from app.analysis import _df
+    rng = np.random.default_rng(4)
+    files = []
+    for i, cid in enumerate(("Nigeria", "Benin", "Niger")):
+        n = 4000
+        df = pd.DataFrame({"d": pd.to_datetime("2015-01-01") + pd.to_timedelta(rng.integers(0, 60, n), "D"),
+                           "yi": rng.integers(90, 96, n), "xi": rng.integers(30 + i, 36 + i, n),  # overlapping cells
+                           "s": rng.integers(0, 3, n), "n": rng.integers(1, 4, n), "frp": rng.uniform(0, 50, n)})
+        df = df.drop_duplicates(["d", "yi", "xi", "s"]).astype({"yi": "int16", "xi": "int16", "s": "int8"})
+        out = tmp_path / "countries" / cid
+        out.mkdir(parents=True)
+        df.to_parquet(out / "grid_daily.parquet")
+        files.append(out / "grid_daily.parquet")
+    s = Store(tmp_path, RES)
+    bbox = [3.05, 9.05, 3.75, 9.45]  # cuts through the shared cells
+    full = _df(f"SELECT d, s, count(*)::DOUBLE AS cells, sum(n)::DOUBLE AS det, sum(frp)::DOUBLE AS frp "
+               f"FROM {s._src(files, bbox)} GROUP BY d, s").sort_values(["d", "s"]).reset_index(drop=True)
+    fast = _df(s._daily_merged_sql(files, bbox)).sort_values(["d", "s"]).reset_index(drop=True)
+    assert len(full) == len(fast) and (full.cells == fast.cells).all()
+    assert np.allclose(full.det, fast.det) and np.allclose(full.frp, fast.frp)
+    y0, y1, x0, x1 = s._cell_bounds(bbox)
+    frames = [pd.read_parquet(f) for f in files]
+    rows = sum(int(((g.yi >= y0) & (g.yi <= y1) & (g.xi >= x0) & (g.xi <= x1)).sum()) for g in frames)
+    assert full.cells.sum() < rows  # the box really contains cell-days shared between files

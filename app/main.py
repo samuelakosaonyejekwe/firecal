@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import pathlib
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
@@ -38,7 +39,16 @@ async def lifespan(_app):
         # backs up GitHub's best-effort schedule: rebuild the website when it falls behind NASA
         from pipeline import keeper
         keeper.start(log=log.warning)
+        threading.Thread(target=_warm_map, daemon=True, name="map-warmup").start()
     yield
+
+
+def _warm_map():
+    """Prepare the world map layer in the background (the first one computes every country's calibration)."""
+    try:
+        store.grid([-180.0, -60.0, 180.0, 85.0])
+    except Exception as e:  # only a speed-up; the map still works without it
+        log.warning(f"map warm-up skipped ({e.__class__.__name__}: {e})")
 
 
 app = FastAPI(title="FireCal — harmonized MODIS/VIIRS burning calendar", lifespan=lifespan)
@@ -88,6 +98,7 @@ def needs_data(e: NeedsData):
 # ─────────────────────────────── API ───────────────────────────────
 @app.get("/api/health")
 def health():
+    store.refresh()  # report countries added on disk since the last request
     return {"ok": True, "countries_ready": len(store.ready), "live_feed": nrt.fetched_at(), "live_error": nrt.error}
 
 

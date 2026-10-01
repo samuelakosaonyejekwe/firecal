@@ -29,6 +29,7 @@ border cells so nothing is double-counted.
 """
 from __future__ import annotations
 
+import concurrent.futures as cf
 import hashlib
 import json
 import math
@@ -50,6 +51,7 @@ from .constants import (AQUA_START, CELL, LAMBDA, LAMBDA_AREA, MODIS_START, TERR
 CODE_VERSION = hashlib.sha1(b"".join(
     (pathlib.Path(__file__).parent / f).read_bytes() for f in ("analysis.py", "constants.py"))).hexdigest()[:10]
 MAX_MAP_CELLS = 20000  # coarsen map layers beyond this many cells
+GRID_WORKERS = 6       # countries computed in parallel for a map layer
 MAX_CV_ERROR = 15.0    # % median out-of-sample error above which results are flagged "indicative only"
 
 
@@ -88,12 +90,14 @@ class LRU(OrderedDict):
     def __init__(self, n):
         super().__init__()
         self.n = n
+        self._put_lock = threading.Lock()  # map layers fill it from several threads
 
     def put(self, k, v):
-        self[k] = v
-        self.move_to_end(k)
-        while len(self) > self.n:
-            self.popitem(last=False)
+        with self._put_lock:
+            self[k] = v
+            self.move_to_end(k)
+            while len(self) > self.n:
+                self.popitem(last=False)
         return v
 
 
@@ -209,6 +213,25 @@ class Store:
             return f"(SELECT d, yi, xi, s, n, frp FROM read_parquet({lst}) {where})"
         return f"(SELECT d, yi, xi, s, sum(n) AS n, sum(frp) AS frp FROM read_parquet({lst}) {where} GROUP BY d, yi, xi, s)"
 
+    def _daily_merged_sql(self, files, bbox) -> str:
+        """Daily totals over several countries' files, each cell-day counted once (as _src's merge does).
+
+        Equivalent to grouping every row by (d, cell, sensor) first, but much faster: totals are summed per
+        file, and only cells that appear in more than one file (border strips) are corrected for the
+        double count. Detections and FRP are plain sums either way."""
+        lst = "[" + ",".join(f"'{p.as_posix()}'" for p in files) + "]"
+        y0, y1, x0, x1 = self._cell_bounds(bbox)
+        w = f"yi BETWEEN {y0} AND {y1} AND xi BETWEEN {x0} AND {x1}"
+        return f"""
+            WITH shared AS (SELECT yi, xi FROM (SELECT DISTINCT yi, xi, filename FROM read_parquet({lst}, filename = true)
+                                                WHERE {w}) GROUP BY yi, xi HAVING count(*) > 1)
+            SELECT d, s, sum(cells)::DOUBLE AS cells, sum(det)::DOUBLE AS det, sum(frp)::DOUBLE AS frp FROM (
+              SELECT d, s, count(*) AS cells, sum(n) AS det, sum(frp) AS frp FROM read_parquet({lst}) WHERE {w} GROUP BY d, s
+              UNION ALL
+              SELECT d, s, count(DISTINCT (yi, xi)) - count(*) AS cells, 0 AS det, 0 AS frp
+              FROM read_parquet({lst}) SEMI JOIN shared USING (yi, xi) WHERE {w} GROUP BY d, s
+            ) GROUP BY d, s"""
+
     # ---------------------------------------------------------------- prior
     def prior(self):
         """Worldwide MODIS->VIIRS and Terra->VIIRS ratios: fixed and versioned (see pipeline/prior.py),
@@ -219,9 +242,12 @@ class Store:
 
     # ---------------------------------------------------------------- series
     def daily(self, files, bbox) -> pd.DataFrame:
-        df = _df(f"""
-            SELECT d, s, count(*)::DOUBLE AS cells, sum(n)::DOUBLE AS det, sum(frp)::DOUBLE AS frp
-            FROM {self._src(files, bbox)} GROUP BY d, s""")
+        if len(files) > 1 and bbox:
+            df = _df(self._daily_merged_sql(files, bbox))
+        else:
+            df = _df(f"""
+                SELECT d, s, count(*)::DOUBLE AS cells, sum(n)::DOUBLE AS det, sum(frp)::DOUBLE AS frp
+                FROM {self._src(files, bbox)} GROUP BY d, s""")
         idx = pd.date_range(MODIS_START, self.end, freq="D")
         out = pd.DataFrame(index=idx)
         for s, col in ((0, "m"), (1, "v"), (2, "t")):
@@ -475,8 +501,11 @@ class Store:
         disk = self.cdir / cid / "grid_cache" / tag / f"{year or 'all'}_{month or 'all'}.parquet"
         if disk.exists() and disk.stat().st_mtime >= self.path(cid).stat().st_mtime:
             return self._grids.put(key, pd.read_parquet(disk))
-        _, cal, *_ = self.series({"country": cid})
-        k, kt = cal["k_all"] or 1.0, cal["k_terra_all"] or 1.0
+        if not disk.parent.exists():  # first layer for this version: drop layers of older versions
+            for old in disk.parent.parent.glob("*"):
+                if old.is_dir():
+                    shutil.rmtree(old, ignore_errors=True)
+        k, kt = self._country_k(cid, disk.parent)
         where = []
         if year:
             where.append(f"year(d) = {int(year)}")
@@ -490,22 +519,34 @@ class Store:
             FROM '{self.path(cid)}' WHERE true {w} GROUP BY xi, yi HAVING val > 0""")
         if not year:
             df["val"] /= (self.end.year - MODIS_START.year + 1)
-        if not disk.parent.exists():  # first layer for this version: drop layers of older versions
-            for old in disk.parent.parent.glob("*"):
-                if old.is_dir():
-                    shutil.rmtree(old, ignore_errors=True)
         disk.parent.mkdir(parents=True, exist_ok=True)
         tmp = disk.with_suffix(f".{threading.get_ident()}.tmp")
         df.to_parquet(tmp)
         tmp.replace(disk)
         return self._grids.put(key, df)
 
+    def _country_k(self, cid, folder: pathlib.Path) -> tuple[float, float]:
+        """The country's calibration ratios (all-years, Terra-only), kept on disk next to its map layers:
+        computing them takes ~0.4 s per country, which every new layer would otherwise repeat."""
+        f = folder / "k.json"
+        if f.exists() and f.stat().st_mtime >= self.path(cid).stat().st_mtime:
+            k = json.loads(f.read_text())
+            return k["k"], k["kt"]
+        _, cal, *_ = self.series({"country": cid})
+        k, kt = cal["k_all"] or 1.0, cal["k_terra_all"] or 1.0
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix(f".{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps({"k": k, "kt": kt}))
+        tmp.replace(f)
+        return k, kt
+
     def grid(self, bbox, year=None, month=None) -> dict:
         """Map layer: fire days per 0.1° cell inside the viewport, over processed countries."""
         ids = [c for c in self.countries_in(bbox) if c in self._ready]
         y0, y1, x0, x1 = self._cell_bounds(bbox)
-        parts = [g[(g.yi >= y0) & (g.yi <= y1) & (g.xi >= x0) & (g.xi <= x1)]
-                 for g in (self._country_grid(c, year, month) for c in ids)]
+        with cf.ThreadPoolExecutor(max_workers=GRID_WORKERS) as pool:  # DuckDB scans run in parallel
+            grids = list(pool.map(lambda c: self._country_grid(c, year, month), ids))
+        parts = [g[(g.yi >= y0) & (g.yi <= y1) & (g.xi >= x0) & (g.xi <= x1)] for g in grids]
         df = pd.concat(parts) if parts else pd.DataFrame({"xi": [], "yi": [], "val": []})
         df = df.groupby(["xi", "yi"], as_index=False).val.max() if len(parts) > 1 else df
         return {**self._coarsen(df), "year": year, "month": month, "countries": ids}
