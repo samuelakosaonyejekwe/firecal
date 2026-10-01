@@ -555,6 +555,9 @@ function renderNowcast() {
   $("nowCard").hidden = false; syncNav();
   const d0 = n.days[0], d1 = n.days[n.days.length - 1];
   $("nowSub").textContent = `${niceDate(d0, false)} – ${niceDate(d1)} · provisional VIIRS near-real-time · updated ${n.fetched_at ? new Date(n.fetched_at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }) : "–"}`;
+  // say so plainly if the live data is old (e.g. the hosting's scheduled refresh is delayed)
+  const ageH = n.fetched_at ? (Date.now() - new Date(n.fetched_at)) / 36e5 : 0;
+  if (ageH > 6) $("nowSub").insertAdjacentHTML("beforeend", ` <span class="stale">· ⚠ not refreshed for ${fmt(ageH)} hours; this week's figures may be out of date</span>`);
   const st = nowStatus(n);
   $("nowCard").style.setProperty("--now-c", st ? st.color : css("--accent"));
   $("nowStatus").innerHTML = st ? `<div class="status big"><i style="background:${st.color}"></i>${esc(st.label)}</div>` : "";

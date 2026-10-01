@@ -396,3 +396,5 @@ button.ghost:hover, select:hover { border-color: color-mix(in srgb, var(--accent
 .nb i.skel { width: 100%; max-width: 34px; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .skel, .spinner { animation: none; } }
+
+.stale { color: var(--critical); font-weight: 600; }
