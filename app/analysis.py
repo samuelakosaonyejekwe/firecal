@@ -549,7 +549,20 @@ class Store:
         parts = [g[(g.yi >= y0) & (g.yi <= y1) & (g.xi >= x0) & (g.xi <= x1)] for g in grids]
         df = pd.concat(parts) if parts else pd.DataFrame({"xi": [], "yi": [], "val": []})
         df = df.groupby(["xi", "yi"], as_index=False).val.max() if len(parts) > 1 else df
-        return {**self._coarsen(df), "year": year, "month": month, "countries": ids}
+        # one colour scale for the whole world (as on the website), so a colour means the same everywhere
+        return {**self._coarsen(df), "max": self._layer_max(year, month), "year": year, "month": month, "countries": ids}
+
+    def _layer_max(self, year, month) -> float:
+        """99th percentile of the layer's 0.1° cells over every available country (pipeline/static_site.py's rule)."""
+        key = ("layermax", tuple(sorted(self._ready.items())), year, month, self.prior())
+        if key not in self._mem:
+            with cf.ThreadPoolExecutor(max_workers=GRID_WORKERS) as pool:
+                grids = list(pool.map(lambda c: self._country_grid(c, year, month), self.ready))
+            df = pd.concat(grids) if grids else pd.DataFrame({"xi": [], "yi": [], "val": []})
+            vals = df.groupby(["xi", "yi"]).val.max() if len(grids) > 1 else df.val
+            vals = vals[vals >= 0.05]  # below 0.05 a cell rounds to "no fire" on the website
+            self._mem.put(key, _r(float(np.quantile(vals, 0.99)), 2) if len(vals) else 0)
+        return self._mem[key]
 
     @staticmethod
     def _coarsen(df, limit=MAX_MAP_CELLS, how="mean"):
