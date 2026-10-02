@@ -56,13 +56,14 @@ def env(tmp_path, monkeypatch):
     def fake_fetch(cid, progress=None):
         built.append(cid)
 
-    def fake_build(cid, keep_raw=False):
+    def fake_build(cid, keep_raw=False, archive_year=None):
         out = tmp_path / "data" / "countries" / cid
         out.mkdir(parents=True, exist_ok=True)
         (out / "grid_daily.parquet").write_bytes(b"built-" + cid.encode())
 
     monkeypatch.setattr(sync, "fetch_country", fake_fetch)
     monkeypatch.setattr(sync, "build_country", fake_build)
+    monkeypatch.setattr(sync, "latest_archive_year", lambda: 2024)  # no network in tests
     return fake, tmp_path / "data" / "countries", built
 
 

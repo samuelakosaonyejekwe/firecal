@@ -25,7 +25,7 @@ import tempfile
 import time
 
 from pipeline.build import build_country
-from pipeline.fetch import DATA, fetch_country
+from pipeline.fetch import DATA, fetch_country, latest_archive_year
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 RELEASE = "firecal-data"
@@ -163,7 +163,7 @@ def archive_through(cid: str) -> int | None:
 def rebuild(cid: str, store: GitHubStore | None, progress=None) -> tuple[str, bool]:
     """Re-download every year from NASA (picking up newly published archives) and republish."""
     fetch_country(cid, progress=progress)
-    build_country(cid, keep_raw=False)
+    build_country(cid, keep_raw=False, archive_year=latest_archive_year())
     if store:
         store.upload(cid)
         return "rebuilt with new NASA years → published", True
@@ -207,7 +207,7 @@ def sync_country(cid: str, store: GitHubStore | None, progress=None, skip_publis
         drop_raw(cid)  # an interrupted NASA download is superseded by the published country
         return "downloaded from GitHub", False
     fetch_country(cid, progress=progress)
-    build_country(cid, keep_raw=False)
+    build_country(cid, keep_raw=False, archive_year=latest_archive_year())
     if store:
         store.upload(cid)
         return "built from NASA → published", True
