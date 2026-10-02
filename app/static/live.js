@@ -109,7 +109,8 @@
     const tiles = {}, index = { tile_cells: tileCells, tiles: {} };
     for (let i = 0; i < N; i++) {
       const t = `${Math.floor(cd.yi[i] / tileCells)}_${Math.floor(cd.xi[i] / tileCells)}`;
-      (tiles[t] ||= { days, rows: [] }).rows.push([cd.di[i], cd.xi[i], cd.yi[i], cd.n[i]]);
+      if (!tiles[t]) tiles[t] = { days, rows: [] };
+      tiles[t].rows.push([cd.di[i], cd.xi[i], cd.yi[i], cd.n[i]]);
     }
     for (const t in tiles) index.tiles[t] = tiles[t].rows.length;
     const meta = { source_last_modified: sourceModified, days, complete_days: days.slice(1, -1), latest_detection: cd.latest ?? null,

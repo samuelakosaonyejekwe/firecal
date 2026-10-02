@@ -512,3 +512,16 @@ tbody tr:hover td { background: var(--surface-2); }
 @media (prefers-reduced-motion: reduce) { .skel, .spinner { animation: none; } }
 
 .stale { color: var(--critical); font-weight: 600; }
+
+/* ── older browsers without color-mix() (iOS < 16.2, Chrome < 111): plain colours instead ── */
+@supports not (color: color-mix(in srgb, red, blue)) {
+  .aoi-head, .now-card { background: var(--surface); }
+  .brief li { background: var(--surface-2); }
+  .loading { background: rgba(0, 0, 0, .35); }
+  .pill.hi { background: rgba(220, 38, 38, .2); }
+  .pill.lo { background: rgba(37, 99, 235, .2); }
+  .caution { background: rgba(245, 158, 11, .15); }
+  .search input:focus { box-shadow: 0 0 0 4px rgba(255, 209, 102, .35); }
+  button.ghost:hover, select:hover { border-color: var(--accent); }
+  .skel { background: var(--surface-2); }
+}

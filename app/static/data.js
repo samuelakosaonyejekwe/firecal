@@ -29,6 +29,25 @@
       }
     }
   }
+  // helpers loaded only by older browsers that lack a feature (integrity-checked)
+  const loaded = new Map();
+  function loadScript(url, integrity) {
+    if (!loaded.has(url)) loaded.set(url, new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      Object.assign(s, { src: url, integrity, crossOrigin: "anonymous", onload: resolve, onerror: () => { loaded.delete(url); reject(new Error("could not load a helper; check the connection")); } });
+      document.head.appendChild(s);
+    }));
+    return loaded.get(url);
+  }
+  function loadStyle(url, integrity) {
+    if (document.querySelector(`link[href="${url}"]`)) return;
+    const l = document.createElement("link");
+    Object.assign(l, { rel: "stylesheet", href: url, integrity, crossOrigin: "anonymous" });
+    document.head.appendChild(l);
+  }
+  window.FireLoad = { script: loadScript, style: loadStyle };
+  const PAKO = ["https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako_inflate.min.js", "sha384-taEjHL+GUvC8IhXeCaTNUxz3O8ItsajGFLDFj4v/VJvM24HU36qP/6sRpuAGGfeT"];
+
   const cellBounds = ([w, s, e, n]) => ({ y0: Math.floor(s * CELL), y1: Math.ceil(n * CELL) - 1, x0: Math.floor(w * CELL), x1: Math.ceil(e * CELL) - 1 });
   const aoiQuery = (a) => (a.country ? `country=${encodeURIComponent(a.country)}` : `bbox=${a.bbox.join(",")}`);
 
@@ -61,7 +80,11 @@
     if (!r.ok) throw new HttpError(r.status, null);
     const buf = new Uint8Array(await r.arrayBuffer());
     if (buf[0] !== 0x1f || buf[1] !== 0x8b) return buf.buffer; // already decoded by the server
-    if (!("DecompressionStream" in window)) throw new Error("this browser can't decompress tiles; please update it");
+    if (!("DecompressionStream" in window)) { // older browsers (e.g. iOS before 16.4): a small JavaScript inflater
+      await loadScript(...PAKO);
+      const out = window.pako.ungzip(buf);
+      return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+    }
     const ds = new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"));
     return new Response(ds).arrayBuffer();
   }

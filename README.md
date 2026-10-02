@@ -15,7 +15,7 @@ compares with every past year.
 
 | Need (from the challenge) | FireCal feature |
 |---|---|
-| Any **selected area of interest** | Search or click any of 208 countries, **draw a box anywhere** (cross-border boxes merge countries without double-counting), use **◎ Me** (geolocation), or type coordinates |
+| Any **selected area of interest** | Search, click or tap any of 208 countries (a tap on a phone first explains the map square, with an Analyze button), **draw a box anywhere** (cross-border boxes merge countries without double-counting), use **◎ Me** (geolocation), or type coordinates |
 | **Harmonize** MODIS + VIIRS | Per-area, per-month calibration on the 2012–present overlap, with three sensor eras and shrinkage to a worldwide prior; validated out of sample |
 | **Burning activity calendar** | Month × year calendar (activity or anomaly σ), with a click-through to a day-by-day calendar for any year |
 | **Historical fire patterns** | Seasonal profile (normal range vs any season), season timing, season totals, long-term trend |
@@ -115,10 +115,11 @@ a memory cap (`FIRECAL_BUILD_MEMORY`, default 2GB), so its memory stays flat at 
 4. **Three eras.** Terra-only (Nov 2000 – Jul 2002, half the overpasses) gets its own factor; Terra+Aqua (→ Jan 2012) is scaled by `k_month`; VIIRS is the reference afterwards. Terra's post-2022 orbit drift is excluded from its fit.
 5. **Validate.** Leave-one-year-out cross-validation predicts each VIIRS year from MODIS alone, plus a VIIRS-independent check (Terra-only vs Terra+Aqua, 2003–2011).
 
-Results (median out-of-sample annual error): DR Congo **1.6%**, Nigeria **2.1%** (monthly R² 0.99),
-Ghana 3.7%, Brazil 3.9%, Togo 5.1%. Areas with few fires (under 3,000 VIIRS fire cell-days in
-2012+), a weak monthly fit (R² < 0.5) or a test error above 15% are flagged **"indicative only"**
-with the reason, e.g. Cyprus (≈100 fire cell-days a year, 14.9%) and Germany (27.9%).
+Results (median out-of-sample annual error, worldwide prior k_world = 2.633 from all 208 countries):
+DR Congo **1.6%**, Nigeria **2.1%** (monthly R² 0.99), India 2.2%, Australia 3.1%, Ghana 3.7%,
+Brazil 3.9%, Russia 4.8%, United States 5.0%, Togo 5.1%. Areas with few fires (under 3,000 VIIRS
+fire cell-days in 2012+), a weak monthly fit (R² < 0.5) or a test error above 15% are flagged
+**"indicative only"** with the reason, e.g. Cyprus (≈110 fire cell-days a year, 14.8%) and Germany (27.9%).
 The test suite in `tests/` checks that the method recovers a known ratio, removes the artificial 2012 jump,
 that the browser and Python engines agree, and that the website's tiles reproduce the server exactly.
 

@@ -537,7 +537,7 @@ function setupNav() {
       if (!el || el.hidden || l.hidden) continue;
       if (el.getBoundingClientRect().top <= line) active = l.dataset.sec; // last section whose top has passed the menu
     }
-    if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) active = links.filter((l) => !l.hidden).at(-1).dataset.sec;
+    if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) { const shown = links.filter((l) => !l.hidden); active = shown[shown.length - 1].dataset.sec; }
     setOn(active || links.find((l) => !l.hidden)?.dataset.sec);
   };
   let ticking = false;
@@ -1092,7 +1092,7 @@ function openInstall() {
   $("saveOffline").hidden = local; $("offlineIntro").hidden = local;
   if (local) $("offlineStatus").textContent = "This copy of FireCal runs on this computer, so it already works without internet; only live fires need a connection.";
   else offlineCount().then(renderOfflineStatus);
-  const d = $("installDlg"); if (d.showModal) d.showModal(); else d.setAttribute("open", "");
+  openDialog($("installDlg"));
 }
 
 async function offlineCount() { // countries whose calendar is saved on this device
@@ -1137,7 +1137,18 @@ function updateNetwork() {
   if (off) offlineCount().then((n) => { $("offlineChip").title = n != null ? `Offline: showing data saved on this device (${n} countries saved)` : "Offline: showing saved data"; });
 }
 
-function openHelp() { const d = $("help"); if (d.showModal) d.showModal(); else d.setAttribute("open", ""); }
+// pop-up dialogs; browsers without <dialog> (e.g. iOS before 15.4) get a small, integrity-checked polyfill
+async function openDialog(d) {
+  if (!d.showModal) {
+    try {
+      FireLoad.style("https://cdnjs.cloudflare.com/ajax/libs/dialog-polyfill/0.5.6/dialog-polyfill.min.css", "sha384-evadC5F6i80z/u8ItaHQAncLnFiYmo9BHd5tO/xNgzKN/RaAM3gKFB9E5sct9Z4f");
+      await FireLoad.script("https://cdnjs.cloudflare.com/ajax/libs/dialog-polyfill/0.5.6/dialog-polyfill.min.js", "sha384-+LorgyMYKOvmUpn/wyvKBteKOl4HgVqbkVD00eumg/4kYtpNdCe8ljH+ERe4939i");
+      window.dialogPolyfill.registerDialog(d);
+    } catch (_) { d.setAttribute("open", ""); return; }
+  }
+  d.showModal();
+}
+function openHelp() { openDialog($("help")); }
 
 // ───────────────────────── wiring ─────────────────────────
 async function loadMeta() {
@@ -1241,7 +1252,9 @@ async function init() {
   $("installBtn").hidden = false; $("installBtn").onclick = openInstall;
   $("saveOffline").onclick = saveOffline;
   addEventListener("online", updateNetwork); addEventListener("offline", updateNetwork); updateNetwork();
-  $("helpClose").onclick = () => $("help").close?.();
+  // last resort (no <dialog> and no polyfill): the dialogs' close buttons simply hide them
+  for (const f of document.querySelectorAll('dialog form[method="dialog"]'))
+    f.addEventListener("submit", (e) => { const d = f.closest("dialog"); if (!d.close) { e.preventDefault(); d.removeAttribute("open"); } });
   $("theme").onclick = () => {
     const next = isDark() ? "light" : "dark";
     document.documentElement.dataset.theme = next;

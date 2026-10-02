@@ -57,7 +57,9 @@ self.addEventListener("install", (e) => {
     await saveAll(SHELL, SHELL_URLS);                      // the app itself
     await Promise.allSettled([saveAll(DATA, DATA_URLS), saveAll(LIBS, LIB_URLS), saveFonts()]);
     await self.skipWaiting();
-    saveAll(TILES, worldTiles(), { skipCached: true });   // in the background: not needed to start
+    // in the background, and not on Data Saver or 2G (those tiles are still saved as the map shows them)
+    const net = self.navigator.connection;
+    if (!(net?.saveData || /2g/.test(net?.effectiveType || ""))) saveAll(TILES, worldTiles(), { skipCached: true });
   })());
 });
 
