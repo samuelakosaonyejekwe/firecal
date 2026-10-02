@@ -43,21 +43,39 @@ function linfit(xs, ys) { // least-squares slope + mean
   return { slope, mean: my };
 }
 
-function toast(msg) {
+function toast(msg, ms = 2600) { // plain text (never HTML)
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2600);
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), ms);
 }
 
 // ───────────────────────── area of interest ─────────────────────────
 const aoiQuery = (a) => (a.country ? `country=${encodeURIComponent(a.country)}` : `bbox=${a.bbox.join(",")}`);
 const aoiKey = (a) => (a ? aoiQuery(a) : "");
 
+// a country id or name from a link, in any letter case or spacing ("cyprus", "United States", "United_States")
+function findCountry(q) {
+  const k = String(q || "").trim().toLowerCase().replace(/[\s_]+/g, " ");
+  if (!k) return null;
+  return state.meta.countries.find((c) => c.id.toLowerCase().replace(/_/g, " ") === k || c.name.toLowerCase() === k) || null;
+}
+
+let hashProblem = ""; // why a link's area couldn't be used (shown once the page has loaded)
 function aoiFromHash() {
   const p = new URLSearchParams(location.hash.slice(1));
-  if (p.get("country") && state.byId[p.get("country")]) return { country: p.get("country") };
+  hashProblem = "";
+  if ((p.get("country") || "").trim()) {
+    const c = findCountry(p.get("country"));
+    if (c) return { country: c.id };
+    hashProblem = `The link asked for “${p.get("country").slice(0, 60)}”, which isn't a country FireCal knows. Showing another area instead; search for the one you want above.`;
+  }
   if (p.get("bbox")) {
-    const b = p.get("bbox").split(",").map(Number);
-    if (b.length === 4 && b.every(isFinite) && b[0] < b[2] && b[1] < b[3]) return { bbox: b };
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+    const r = p.get("bbox").split(",").map(Number);
+    if (r.length === 4 && r.every(isFinite)) {
+      const b = [clamp(r[0], -180, 180), clamp(r[1], -90, 90), clamp(r[2], -180, 180), clamp(r[3], -90, 90)];
+      if (b[0] < b[2] && b[1] < b[3]) return { bbox: b };
+    }
+    hashProblem = "The link's box coordinates aren't valid (west, south, east, north in degrees). Showing another area instead.";
   }
   return null;
 }
@@ -1203,6 +1221,7 @@ async function init() {
   history.replaceState(null, "", `#${aoiQuery(state.aoi)}`);
   if (state.aoi.country) $("search").value = state.byId[state.aoi.country].name;
   loadAOI();
+  if (hashProblem) toast(hashProblem, 7000);
   if (!store.get("firecal-seen-help")) { store.set("firecal-seen-help", "1"); openHelp(); }
 
   const byName = (v) => state.meta.countries.find((c) => c.name.toLowerCase() === v.trim().toLowerCase());
@@ -1262,7 +1281,7 @@ async function init() {
     rethemed();
   };
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", rethemed);
-  addEventListener("hashchange", () => { const a = aoiFromHash(); if (a) selectAOI(a); });
+  addEventListener("hashchange", () => { const a = aoiFromHash(); if (a) selectAOI(a); else if (hashProblem) toast(hashProblem, 7000); });
   let rt;
   addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { Object.values(charts).forEach((c) => c.resize()); if (state.data) { sizeDaily(); dirty.add("chDaily"); flush(); } }, 150); });
   document.addEventListener("keydown", (e) => {
