@@ -238,7 +238,9 @@ async function refreshLayer() {
       map.setPaintProperty("live", "circle-stroke-color", css("--surface"));
       map.setPaintProperty("live", "circle-stroke-width", 0.5);
       const days = g.days?.length ? `${niceDate(g.days[0], false)} – ${niceDate(g.days[g.days.length - 1])}` : "";
-      $("mapLegend").innerHTML = rampLegend(r.slice(3), "1", `${fmt(max)}+`, `VIIRS detections per cell · ${days} · provisional`);
+      $("mapLegend").innerHTML = mapLegend(r.slice(3), ["few", "some", "many", "very many"], "1", `${fmt(max)}+`,
+        `VIIRS detections per 0.1° cell · ${days}`,
+        "<b>Brighter = more fire.</b> Each dot is a ≈ 11 km square, coloured by how many times satellites detected fire there in the last 7 days (provisional data).");
     } else {
       const y = $("mapYear").value, m = +$("mapMonth").value;
       const g = await FireData.grid(vb, y !== "all" ? +y : null, m || null, zoom);
@@ -251,13 +253,27 @@ async function refreshLayer() {
       const stops = r.slice(1).flatMap((c, i) => [(max * (i + 1)) / (r.length - 1), c]);
       map.setPaintProperty("cells", "fill-color", ["interpolate", ["linear"], ["get", "v"], 0, r[0], ...stops]);
       $("mapLegend").innerHTML = g.cells.length
-        ? rampLegend(r, "0", `${fmt(max, 1)}+`, `${y === "all" ? "mean fire days per year" : "fire days"} per 0.1° cell (VIIRS-equivalent)`)
+        ? mapLegend(r, ["rare", "occasional", "frequent", "very frequent"], "0", `${fmt(max, 1)}+`,
+            y !== "all" ? `fire days in ${y}` : m ? `fire days per year in ${MONTHS_LONG[m - 1]}` : "fire days per year",
+            `<b>Brighter = burns more often.</b> Each square (0.1°, ≈ 11 km) is coloured by how many days ${
+              y !== "all" ? `in ${esc(y)}` : m ? `of ${MONTHS_LONG[m - 1]}, on average each year,` : "a year, on average since 2000,"
+            } satellites saw fire there; one worldwide scale, so colours compare across the globe.`)
         : FireData.mode === "static" ? `<span>No recorded fires in this view for the selected period.</span>`
         : `<span>No history loaded in this view yet. Click a country to load it, or switch to <b>Live</b> for this week's fires worldwide.</span>`;
     }
   } catch (e) {
     if (token === refreshLayer.token) $("mapLegend").textContent = live ? "Live feed is warming up. Try again in a minute." : `Map layer unavailable: ${e.message}`;
   }
+}
+
+// map legend: the colour bar with plain words along it, the numbers at its ends, and one line of explanation
+function mapLegend(colors, words, lo, hi, unit, explain) {
+  return `<div class="mlegend">
+    <div class="mbar" style="background:linear-gradient(90deg,${colors.join(",")})"></div>
+    <div class="mwords">${words.map((w) => `<span>${esc(w)}</span>`).join("")}</div>
+    <div class="mends"><span>${esc(lo)}</span><span>${esc(unit)}</span><span>${esc(hi)}</span></div>
+    <p class="mexplain">${explain}</p>
+  </div>`;
 }
 
 function rampLegend(colors, lo, hi, caption) {
