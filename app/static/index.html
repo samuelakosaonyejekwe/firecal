@@ -5,10 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>FireCal</title>
   <meta name="description" content="Harmonized MODIS + VIIRS burning activity calendar for anywhere on Earth">
-  <meta name="theme-color" content="#c9501f">
+  <meta name="theme-color" content="#0a0d14" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f5f6fa" media="(prefers-color-scheme: light)">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/icon.svg?v={{v}}" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/icon-192.png?v={{v}}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap">
   <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
   <link rel="preconnect" href="https://server.arcgisonline.com" crossorigin>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
@@ -26,7 +30,7 @@
     <div class="brand">
       <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 2c1 3.5-1.6 5.3-1.6 8.2 0 1.3.8 2.3 2 2.3 1.6 0 2.3-1.5 2-3.6 2.5 1.8 4 4.4 4 7.1A6.4 6.4 0 0 1 12 22a6.4 6.4 0 0 1-6.4-6c0-4.6 4.1-7 6.4-14Z"/></svg>
       <div>
-        <h1>FireCal</h1>
+        <h1><b>Fire</b>Cal</h1>
         <p>Harmonized MODIS + VIIRS burning calendar · anywhere on Earth</p>
       </div>
     </div>
@@ -108,6 +112,7 @@
 
       <div class="secnav-wrap" id="secnavWrap">
       <nav class="secnav" id="secnav" aria-label="Sections">
+        <a href="#aoiHead" class="nav-area" id="navArea" title="Back to this area's summary"></a>
         <a href="#nowCard" data-sec="nowCard">This week</a>
         <a href="#sec-overview" data-sec="sec-overview">Overview</a>
         <a href="#sec-calendar" data-sec="sec-calendar">Calendar</a>

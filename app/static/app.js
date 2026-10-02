@@ -98,6 +98,8 @@ function initMap() {
     mapUnavailable(); return;
   }
   map.on("error", (e) => { if (/webgl/i.test(e?.error?.message || "")) mapUnavailable(); });
+  // keep the credits as a small (i) button the visitor can open, instead of a box over the map
+  map.once("load", () => document.querySelector("#map .maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show"));
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
   map.touchZoomRotate.disableRotation();
 
@@ -292,7 +294,7 @@ function banner(html, kind = "info") {
 async function loadAOI() {
   const a = state.aoi, token = ++state.req;
   const name = a.country ? state.byId[a.country].name : `${lat(a.bbox[1])} – ${lat(a.bbox[3])}, ${lon(a.bbox[0])} – ${lon(a.bbox[2])}`;
-  $("aoiTitle").textContent = name;
+  $("aoiTitle").textContent = name; $("navArea").textContent = name;
   $("aoiSub").textContent = a.country ? "Country" : "Custom area";
   banner(null);
   setBusy(true, `<span class="spinner"></span> Analyzing ${esc(name)}…`);
@@ -399,7 +401,7 @@ async function loadNowcast(a, token, cal) {
 function showResults() {
   const d = state.data;
   $("results").hidden = false;
-  $("aoiTitle").textContent = d.label;
+  $("aoiTitle").textContent = d.label; $("navArea").textContent = d.label;
   const cs = d.countries.map((c) => c.name);
   $("aoiSub").textContent = state.aoi.country
     ? `Country · ${fmt(d.total_cell_days)} fire cell-days recorded since Nov 2000`
@@ -507,10 +509,10 @@ function renderAll() {
 function base() {
   return {
     animationDuration: 300,
-    textStyle: { fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif', color: css("--ink-2"), fontSize: 12 },
+    textStyle: { fontFamily: 'Inter, system-ui, -apple-system, "Segoe UI", sans-serif', color: css("--ink-2"), fontSize: 12 },
     tooltip: {
       confine: true, backgroundColor: css("--surface"), borderColor: css("--border"), borderWidth: 1,
-      textStyle: { color: css("--ink"), fontSize: 12 }, extraCssText: "box-shadow:0 4px 16px rgba(0,0,0,.15);border-radius:8px;",
+      textStyle: { color: css("--ink"), fontSize: 12 }, extraCssText: "box-shadow:0 12px 32px -8px rgba(0,0,0,.35);border-radius:12px;",
     },
   };
 }
