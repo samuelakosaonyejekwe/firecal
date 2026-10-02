@@ -105,16 +105,19 @@ jobs:
         run: |
           # once nothing is missing, recompute from the whole world even below the 20% step
           if grep -q "^0 countries" missing.txt; then python pipeline/finalize.py --complete; else python pipeline/finalize.py; fi
-      - name: Retry countries that are still missing
+      - name: Retry missing countries or failed workers
         if: ${{ !cancelled() }}   # a run you cancel by hand is not retried
         env:
           ATTEMPT: ${{ inputs.attempt || '1' }}
+          SHARDS: ${{ needs.shard.result }}
+          UPDATE: ${{ (github.event_name == 'schedule' || inputs.update == 'true') && 'true' || 'false' }}
         run: |
-          if ! grep -q "^0 countries" missing.txt; then
+          # again on fresh machines, in the same mode, if a country is missing or a worker failed
+          if ! grep -q "^0 countries" missing.txt || [ "$SHARDS" != "success" ]; then
             if [ "$ATTEMPT" -lt 3 ]; then
-              gh workflow run world.yml -f attempt=$((ATTEMPT + 1))
-              echo "started attempt $((ATTEMPT + 1)) for the missing countries"
+              gh workflow run world.yml -f attempt=$((ATTEMPT + 1)) -f update=$UPDATE
+              echo "started attempt $((ATTEMPT + 1)) (update=$UPDATE)"
             else
-              echo "::warning::still missing after $ATTEMPT attempts; next month's run (or the local preload) will add them"
+              echo "::warning::incomplete after $ATTEMPT attempts; the next update (at most 35 days away) or the local preload will finish it"
             fi
           fi

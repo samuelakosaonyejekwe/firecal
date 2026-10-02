@@ -32,3 +32,29 @@ def test_other_failures_do_not_stop_the_run(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["world.py", "--no-github", "Chad", "Mali", "Niger", "Benin", "Togo"])
     world.main()
     assert len(tried) == 5
+
+
+def test_dropped_connection_to_nasa_is_retried(monkeypatch):
+    import contextlib
+    import urllib.error
+    import pipeline.fetch as fetch
+    calls = []
+
+    def flaky(req, timeout=None):
+        calls.append(1)
+        if len(calls) < 3:
+            raise urllib.error.URLError(OSError(101, "Network is unreachable"))
+        return contextlib.nullcontext()
+    monkeypatch.setattr(fetch.urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(fetch.time, "sleep", lambda s: None)
+    assert fetch.published("modis", 2024, "Brazil") is True and len(calls) == 3
+
+
+def test_update_stops_cleanly_when_nasa_is_unreachable(monkeypatch, capsys):
+    def down():
+        raise OSError(101, "Network is unreachable")
+    monkeypatch.setattr(world, "latest_archive_year", down)
+    monkeypatch.setattr(sys, "argv", ["world.py", "--no-github", "--update", "Chad"])
+    with pytest.raises(SystemExit) as e:
+        world.main()
+    assert e.value.code == 3 and "NASA unreachable" in capsys.readouterr().out

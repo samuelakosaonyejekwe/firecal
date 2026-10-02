@@ -81,7 +81,11 @@ def main():
         sys.exit(f"unknown country {bad[0]!r}; names look like Nigeria, United_States, Cote_d_Ivoire (see app/resources/countries.json)")
 
     print(f"{len(ids)} countries to sync" + (f"; {sum(store.has(c) for c in ids)} already on GitHub" if store else ""), flush=True)
-    latest = latest_archive_year() if update else None
+    try:
+        latest = latest_archive_year() if update else None
+    except OSError as e:  # NASA unreachable from this machine even after retries: stop cleanly
+        print(f"stopping: NASA unreachable ({e}); run again later (finished countries are kept)", flush=True)
+        sys.exit(3)
     if update:
         print(f"NASA's latest yearly archive: {latest}", flush=True)
     failed, published, pending, offline = [], 0, 0, 0

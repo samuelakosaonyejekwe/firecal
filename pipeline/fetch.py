@@ -28,11 +28,16 @@ def published(sensor: str, year: int, country: str) -> bool:
     """Has FIRMS published this sensor-year archive for the country yet?"""
     name = f"{sensor}_{year}_{country}.csv"
     req = urllib.request.Request(f"{BASE}/{sensor}/{year}/{urllib.parse.quote(name)}", method="HEAD")
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT):
-            return True
-    except urllib.error.HTTPError:
-        return False
+    for wait in (5, 15, 30, None):  # a dropped connection is retried; "not found" is an answer
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT):
+                return True
+        except urllib.error.HTTPError:
+            return False
+        except (urllib.error.URLError, OSError):
+            if wait is None:
+                raise
+            time.sleep(wait)
 
 
 def download(sensor: str, year: int, country: str, retries: int = 3) -> str:
