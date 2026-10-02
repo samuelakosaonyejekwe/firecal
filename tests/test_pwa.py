@@ -38,3 +38,15 @@ def test_manifest_icons_and_screenshots_match_their_sizes():
     html = (STATIC / "index.html").read_text()
     assert 'rel="apple-touch-icon" href="/static/apple-touch-icon.png' in html  # iPhone / iPad home screen
     assert png_size(STATIC / "apple-touch-icon.png") == (180, 180)
+
+
+def test_scripts_avoid_syntax_older_phones_cannot_run():
+    """Older iPhones (iOS 13.4-15) and Android browsers (Chrome 80-91) can't parse or run these;
+    one of them anywhere stops the whole app on those phones."""
+    newer = {r"\|\|=": "||=", r"\?\?=": "??=", r"&&=": "&&=", r"\.at\(-?\d": ".at()", r"\.replaceAll\(": "replaceAll",
+             r"structuredClone\(": "structuredClone", r"Object\.hasOwn\(": "Object.hasOwn", r"\.findLast\(": "findLast",
+             r"\d_\d": "numeric separator", r"#\w+\s*[=;(]": "private class field"}
+    for f in ("app.js", "data.js", "engine.js", "geo.js", "live.js", "sw.js"):
+        src = re.sub(r"`[^`]*`|\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|//[^\n]*", "", (STATIC / f).read_text())
+        found = [name for pat, name in newer.items() if re.search(pat, src)]
+        assert not found, (f, found)
