@@ -197,6 +197,18 @@
     return lc.countries[id]?.cells || days.map(() => 0);
   }
 
+  const MAX_DETAIL_TILES = 12, MAX_MAP_CELLS = 20000; // as Store._coarsen on the server
+  function coarsen(cells) { // merge f×f blocks (mean per 0.1° cell) until at most MAX_MAP_CELLS squares
+    let f = 1, out = cells;
+    while (out.length > MAX_MAP_CELLS) {
+      f += 1;
+      const sums = new Map();
+      for (const [xi, yi, v] of cells) { const k = `${Math.floor(xi / f)},${Math.floor(yi / f)}`; sums.set(k, (sums.get(k) || 0) + v); }
+      out = [...sums].map(([k, v]) => { const [a, b] = k.split(",").map(Number); return [a, b, Math.round((v / (f * f)) * 100) / 100]; });
+    }
+    return { cell: f / CELL, cells: out };
+  }
+
   const Static = {
     mode: "static",
     maxBoxDeg2: Infinity, // set from data/meta.json
@@ -251,15 +263,21 @@
       return { ...FireEngine.nowcast(days, cells, h, +META.range.end.slice(0, 4)), fetched_at: lm.fetched_at,
                source_updated: lm.source_last_modified, direct_from_nasa: src.direct };
     },
-    async grid(bbox, year, month, zoom) {
+    async grid(bbox, year, month) {
+      // like the server: full 0.1° detail whenever the view needs at most MAX_DETAIL_TILES tiles (country
+      // views), merged into coarser squares only as far as needed to stay under MAX_MAP_CELLS; the 0.5°
+      // world overview otherwise
       const key = year ? `y${year}` : month ? `m${String(month).padStart(2, "0")}` : "all";
-      if (zoom < 4) return once(`map:${key}:ov`, () => fetchJSON(`data/map/${key}/overview.json`)).catch(() => ({ cell: 0.5, max: 0, cells: [] }));
+      const overview = () => once(`map:${key}:ov`, () => fetchJSON(`data/map/${key}/overview.json`)).catch(() => ({ cell: 0.5, max: 0, cells: [] }));
       const ix = await once(`map:${key}:ix`, () => fetchJSON(`data/map/${key}/index.json`)).catch(() => ({ tiles: [], max: 0 }));
       const have = new Set(ix.tiles), { y0, y1, x0, x1 } = cellBounds(bbox), want = [], T = ix.tile_cells || 100;
+      if ((Math.floor(y1 / T) - Math.floor(y0 / T) + 1) * (Math.floor(x1 / T) - Math.floor(x0 / T) + 1) > 4 * MAX_DETAIL_TILES) return overview();
       for (let ty = Math.floor(y0 / T); ty <= Math.floor(y1 / T); ty++)
         for (let tx = Math.floor(x0 / T); tx <= Math.floor(x1 / T); tx++) if (have.has(`${ty}_${tx}`)) want.push(`${ty}_${tx}`);
+      if (want.length > MAX_DETAIL_TILES) return overview();
       const parts = await Promise.all(want.map((k) => once(`map:${key}:${k}`, () => fetchJSON(`data/map/${key}/${k}.json`))));
-      return { cell: 0.1, max: ix.max, cells: parts.flatMap((p) => p.cells) };
+      const cells = parts.flatMap((p) => p.cells).filter(([xi, yi]) => xi >= x0 && xi <= x1 && yi >= y0 && yi <= y1);
+      return { max: ix.max, ...coarsen(cells) };
     },
     async live(bbox, zoom) {
       const lm = (await liveSource()).meta;

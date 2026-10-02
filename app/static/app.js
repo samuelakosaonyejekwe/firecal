@@ -73,7 +73,9 @@ function selectAOI(a, { fly = true } = {}) {
   $("search").value = a.country ? state.byId[a.country].name : "";
   drawAOI();
   const v = aoiView(a);
-  if (fly && v && map?.loaded()) map.fitBounds([[v[0], v[1]], [v[2], v[3]]], { padding: 24, maxZoom: 6.5, duration: 700 });
+  // (map.loaded() is false whenever any tile is still loading, which skipped this move; once the map's own
+  // sources exist it can always move, and before that its load handler fits the selected area itself)
+  if (fly && v && map?.getSource("aoi")) map.fitBounds([[v[0], v[1]], [v[2], v[3]]], { padding: 24, maxZoom: 6.5, duration: 700 });
   loadAOI();
   if (matchMedia("(max-width: 1100px)").matches) $("aoiHead").scrollIntoView({ behavior: "smooth", block: "start" });
 }

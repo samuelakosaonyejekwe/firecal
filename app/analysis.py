@@ -121,6 +121,7 @@ class Store:
         self._grids = LRU(256)
         self._ready: dict[str, float] = {}
         self._extent: dict[str, list] = {}
+        self._wide_view: dict[str, list] = {}
         self._prior = None
         self.end = pd.Timestamp("2024-12-31")
         self.refresh()
@@ -148,6 +149,8 @@ class Store:
                     e = _rows(f"SELECT min(xi), min(yi), max(xi), max(yi), max(d) FROM '{self.path(cid)}'")[0]
                     if e[0] is not None:  # a country with no fire records at all has no data extent
                         self._extent[cid] = [e[0] / CELL, e[1] / CELL, (e[2] + 1) / CELL, (e[3] + 1) / CELL, pd.Timestamp(e[4])]
+                        if (e[2] - e[0]) / CELL > 180:  # spans the 180° line (Russia, USA, Fiji, NZ): frame the main part
+                            self._wide_view[cid] = self._main_side(cid)
             dated = [self._extent[c][4] for c in ready if c in self._extent]
             if dated:
                 last = max(dated)
@@ -160,7 +163,16 @@ class Store:
     def version(self, ids):
         return hashlib.sha1(json.dumps([(i, self._ready.get(i)) for i in sorted(ids)]).encode()).hexdigest()[:12]
 
+    def _main_side(self, cid) -> list:
+        """Extent of the side of the 180° meridian holding most of the country's fire cells."""
+        rows = _rows(f"""SELECT xi >= 0 AS east, count(*) AS n, min(xi), min(yi), max(xi), max(yi)
+                         FROM (SELECT DISTINCT xi, yi FROM '{self.path(cid)}') GROUP BY ALL ORDER BY n DESC""")
+        _, _, x0, y0, x1, y1 = rows[0]
+        return [x0 / CELL, y0 / CELL, (x1 + 1) / CELL, (y1 + 1) / CELL]
+
     def view(self, cid):
+        if cid in self._wide_view:
+            return [round(v, 2) for v in self._wide_view[cid]]
         if cid in self._extent:
             return [round(v, 2) for v in self._extent[cid][:4]]
         return self.meta.get(cid, {}).get("view")
