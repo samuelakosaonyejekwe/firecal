@@ -1220,7 +1220,16 @@ async function init() {
     if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("search").focus(); }
   });
 
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("sw.js").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") {
+    const firstVisit = !navigator.serviceWorker.controller;
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+    // on a first visit the offline helper starts after this page has loaded its data: hand it what was
+    // already loaded (the area you opened, its map layer), so that is saved for airplane mode too
+    if (firstVisit) navigator.serviceWorker.addEventListener("controllerchange", () => {
+      const urls = FireData.fetchedUrls();
+      if (urls.length) navigator.serviceWorker.controller?.postMessage({ type: "save-offline", urls });
+    }, { once: true });
+  }
 }
 
 function rethemed() {

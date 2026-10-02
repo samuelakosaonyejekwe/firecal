@@ -11,7 +11,10 @@
   class HttpError extends Error {
     constructor(status, body) { super(body?.detail || `HTTP ${status}`); this.status = status; this.body = body; }
   }
+  // this site's files fetched so far, so the offline helper can save the ones loaded before it started
+  const fetched = new Set();
   async function fetchJSON(url, opts = {}, tries = 3) {
+    if (!/^https?:/.test(url) && !(opts.method && opts.method !== "GET")) fetched.add(url);
     for (let i = 0; ; i++) {
       try {
         const r = await fetch(url, opts);
@@ -273,14 +276,17 @@
       // views), merged into coarser squares only as far as needed to stay under MAX_MAP_CELLS; the 0.5°
       // world overview otherwise
       const key = year ? `y${year}` : month ? `m${String(month).padStart(2, "0")}` : "all";
-      const overview = () => once(`map:${key}:ov`, () => fetchJSON(`data/map/${key}/overview.json`)).catch(() => ({ cell: 0.5, max: 0, cells: [] }));
-      const ix = await once(`map:${key}:ix`, () => fetchJSON(`data/map/${key}/index.json`)).catch(() => ({ tiles: [], max: 0 }));
+      const overview = () => once(`map:${key}:ov`, () => fetchJSON(`data/map/${key}/overview.json`));
+      const ix = await once(`map:${key}:ix`, () => fetchJSON(`data/map/${key}/index.json`)).catch(() => null);
+      if (!ix) return overview();
       const have = new Set(ix.tiles), { y0, y1, x0, x1 } = cellBounds(bbox), want = [], T = ix.tile_cells || 100;
       if ((Math.floor(y1 / T) - Math.floor(y0 / T) + 1) * (Math.floor(x1 / T) - Math.floor(x0 / T) + 1) > 4 * MAX_DETAIL_TILES) return overview();
       for (let ty = Math.floor(y0 / T); ty <= Math.floor(y1 / T); ty++)
         for (let tx = Math.floor(x0 / T); tx <= Math.floor(x1 / T); tx++) if (have.has(`${ty}_${tx}`)) want.push(`${ty}_${tx}`);
       if (want.length > MAX_DETAIL_TILES) return overview();
-      const parts = await Promise.all(want.map((k) => once(`map:${key}:${k}`, () => fetchJSON(`data/map/${key}/${k}.json`))));
+      let parts;
+      try { parts = await Promise.all(want.map((k) => once(`map:${key}:${k}`, () => fetchJSON(`data/map/${key}/${k}.json`)))); }
+      catch (e) { if (!navigator.onLine) return overview(); throw e; } // offline: the saved 0.5° overview instead of failing
       const cells = parts.flatMap((p) => p.cells).filter(([xi, yi]) => xi >= x0 && xi <= x1 && yi >= y0 && yi <= y1);
       return { max: ix.max, ...coarsen(cells) };
     },
@@ -295,8 +301,11 @@
         for (let ty = Math.floor(y0 / T); ty <= Math.floor(y1 / T); ty++)
           for (let tx = Math.floor(x0 / T); tx <= Math.floor(x1 / T); tx++) if (ix.tiles[`${ty}_${tx}`] != null) want.push(`${ty}_${tx}`);
       if (span > 4 * LIVE_MAX_TILES || want.length > LIVE_MAX_TILES) return { ...(await liveOverview()), fetched_at: lm.fetched_at };
+      let tiles;
+      try { tiles = await Promise.all(want.map(liveTile)); }
+      catch (e) { if (!navigator.onLine) return { ...(await liveOverview()), fetched_at: lm.fetched_at }; throw e; } // offline: saved overview
       const sums = new Map();
-      for (const t of await Promise.all(want.map(liveTile)))
+      for (const t of tiles)
         for (const [, xi, yi, n] of t.rows)
           if (xi >= x0 && xi <= x1 && yi >= y0 && yi <= y1) { const k = `${xi},${yi}`; sums.set(k, (sums.get(k) || 0) + n); }
       const c = coarsen([...sums].map(([k, v]) => { const [xi, yi] = k.split(",").map(Number); return [xi, yi, v]; }), 15000, "sum");
@@ -313,6 +322,7 @@
     onLiveUpdate(f) { liveListeners.push(f); }, // called with the new live meta when NASA's own data replaces the published copy
   };
 
+  Static.fetchedUrls = Server.fetchedUrls = () => [...fetched];
   window.FireData = STATIC ? Static : Server;
   window.FireData.HttpError = HttpError;
 })();
