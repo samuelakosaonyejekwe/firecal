@@ -1010,6 +1010,96 @@ function locateMe() {
   }, () => toast("Location permission denied"), { timeout: 10000 });
 }
 
+// ───────────────────────── install & offline ─────────────────────────
+let installPrompt = null;
+const isStandalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+function platform() {
+  const ua = navigator.userAgent;
+  if (/iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return "ios";
+  if (/Android/.test(ua)) return /SamsungBrowser/.test(ua) ? "samsung" : /Firefox/.test(ua) ? "android-firefox" : "android";
+  if (/Firefox/.test(ua)) return "firefox";
+  if (/Safari/.test(ua) && !/Chrome|Chromium|Edg|OPR/.test(ua)) return "mac-safari";
+  return /Edg/.test(ua) ? "edge" : "desktop";
+}
+addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installPrompt = e; $("installBtn").classList.add("ready"); });
+addEventListener("appinstalled", () => { installPrompt = null; toast("FireCal is installed. It opens from its icon and works offline."); });
+
+function installSteps() {
+  if (isStandalone()) return `<p class="ok-line">✓ FireCal is installed on this device and opens from its own icon.</p>`;
+  if (installPrompt) return `<p>Install FireCal as an app: its own icon, its own window, and it works offline.</p>
+    <p><button type="button" id="doInstall">Install FireCal</button></p>`;
+  const steps = {
+    ios: ["Tap the <b>Share</b> button <span class=\"kbd-ico\">⬆︎</span> (bottom of the screen on iPhone, top on iPad).",
+          "Scroll down and tap <b>Add to Home Screen</b>.", "Tap <b>Add</b>. FireCal now opens full-screen from its icon, also offline."],
+    android: ["Open the browser menu <b>⋮</b> (top right).", "Tap <b>Install app</b> (or <b>Add to Home screen</b>).", "Confirm with <b>Install</b>."],
+    samsung: ["Tap the menu <b>≡</b> (bottom right).", "Tap <b>Add page to</b> → <b>Home screen</b>.", "Confirm with <b>Add</b>."],
+    "android-firefox": ["Open the menu <b>⋮</b>.", "Tap <b>Install</b> (or <b>Add to Home screen</b>).", "Confirm."],
+    "mac-safari": ["In the menu bar choose <b>File → Add to Dock</b> (Safari 17 or newer).", "Click <b>Add</b>. FireCal opens from the Dock like any app."],
+    edge: ["Click the <b>App available</b> icon in the address bar, or open the menu <b>…</b> → <b>Apps</b> → <b>Install this site as an app</b>.", "Click <b>Install</b>."],
+    desktop: ["Click the <b>install</b> icon <span class=\"kbd-ico\">⊕</span> at the right end of the address bar, or open the menu <b>⋮</b> → <b>Cast, save and share</b> → <b>Install page as app</b>.", "Click <b>Install</b>."],
+    firefox: ["Firefox on computers doesn't install web apps. Open this page in <b>Chrome</b>, <b>Edge</b> or <b>Safari</b> to install it,", "or keep using it here: saving for offline below works in Firefox too."],
+  }[platform()];
+  return `<ol class="steps">${steps.map((t) => `<li>${t}</li>`).join("")}</ol>`;
+}
+
+function openInstall() {
+  $("installSteps").innerHTML = installSteps();
+  const btn = $("doInstall");
+  if (btn) btn.onclick = async () => {
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice.catch(() => ({}));
+    if (outcome === "accepted") installPrompt = null;
+    $("installSteps").innerHTML = installSteps();
+  };
+  const local = FireData.mode !== "static";
+  $("saveOffline").hidden = local;
+  if (local) $("offlineStatus").textContent = "This copy of FireCal runs on this computer, so it already works without internet; only live fires need a connection.";
+  else offlineCount().then(renderOfflineStatus);
+  const d = $("installDlg"); if (d.showModal) d.showModal(); else d.setAttribute("open", "");
+}
+
+async function offlineCount() { // countries whose calendar is saved on this device
+  try {
+    const keys = await (await caches.open("firecal-data-v2")).keys();
+    return new Set(keys.map((r) => decodeURIComponent(new URL(r.url).pathname)).filter((p) => p.includes("/data/countries/"))).size;
+  } catch (_) { return null; }
+}
+function renderOfflineStatus(n) {
+  const total = state.meta?.countries.filter((c) => c.ready).length || 0;
+  if (n != null) $("offlineStatus").textContent = n >= total && total ? `✓ All ${total} countries are saved on this device.` : `${n} of ${total} countries saved on this device.`;
+}
+
+async function saveOffline() {
+  if (!("serviceWorker" in navigator) || !navigator.serviceWorker.controller) { toast("Offline saving needs a moment to get ready; reload the page once and try again."); return; }
+  if (!navigator.onLine) { toast("You're offline. Connect once to save everything for offline use."); return; }
+  const ready = state.meta.countries.filter((c) => c.ready);
+  const layers = ["all", ...[...$("mapYear").options].map((o) => o.value).filter((v) => v !== "all").map((y) => `y${y}`),
+                  ...Array.from({ length: 12 }, (_, i) => `m${String(i + 1).padStart(2, "0")}`)];
+  const urls = [...ready.map((c) => `data/countries/${encodeURIComponent(c.id)}.json`),
+                ...layers.flatMap((k) => [`data/map/${k}/overview.json`, `data/map/${k}/index.json`])];
+  const bar = $("offlineBar"), btn = $("saveOffline");
+  bar.hidden = false; btn.disabled = true;
+  const channel = new MessageChannel();
+  channel.port1.onmessage = async (e) => {
+    const { done, total, failed, finished } = e.data;
+    bar.querySelector("i").style.width = `${Math.round((done / total) * 100)}%`;
+    $("offlineStatus").textContent = `Saving… ${done} of ${total} files`;
+    if (finished) {
+      btn.disabled = false; bar.hidden = true;
+      renderOfflineStatus(await offlineCount());
+      toast(failed ? `Saved for offline, except ${failed} files (connection dropped); try again to finish.` : "Everything is saved: FireCal now works fully offline.");
+    }
+  };
+  navigator.serviceWorker.controller.postMessage({ type: "save-offline", urls }, [channel.port2]);
+}
+
+function updateNetwork() {
+  const off = !navigator.onLine;
+  $("offlineChip").hidden = !off;
+  document.documentElement.classList.toggle("is-offline", off);
+  if (off) offlineCount().then((n) => { $("offlineChip").title = n != null ? `Offline: showing data saved on this device (${n} countries saved)` : "Offline: showing saved data"; });
+}
+
 function openHelp() { const d = $("help"); if (d.showModal) d.showModal(); else d.setAttribute("open", ""); }
 
 // ───────────────────────── wiring ─────────────────────────
@@ -1111,6 +1201,9 @@ async function init() {
   $("share").onclick = share;
   $("print").onclick = printReport;
   $("helpBtn").onclick = openHelp;
+  $("installBtn").hidden = false; $("installBtn").onclick = openInstall;
+  $("saveOffline").onclick = saveOffline;
+  addEventListener("online", updateNetwork); addEventListener("offline", updateNetwork); updateNetwork();
   $("helpClose").onclick = () => $("help").close?.();
   $("theme").onclick = () => {
     const next = isDark() ? "light" : "dark";

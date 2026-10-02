@@ -1,16 +1,28 @@
 {
+  "id": "/",
   "name": "FireCal: Harmonized Burning Calendar",
   "short_name": "FireCal",
-  "description": "Harmonized MODIS + VIIRS burning activity calendar and early warning for anywhere on Earth.",
+  "description": "Harmonized MODIS + VIIRS burning activity calendar and early warning for anywhere on Earth. Works offline.",
+  "lang": "en",
+  "dir": "ltr",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f9f9f7",
-  "theme_color": "#c9501f",
+  "display_override": ["standalone", "minimal-ui", "browser"],
+  "orientation": "any",
+  "background_color": "#120d0b",
+  "theme_color": "#9a3412",
+  "categories": ["weather", "education", "utilities", "navigation"],
+  "prefer_related_applications": false,
   "icons": [
-    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png" },
-    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
-    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/static/apple-touch-icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "screenshots": [
+    { "src": "/static/screens/wide.png", "sizes": "1280x800", "type": "image/png", "form_factor": "wide", "label": "Burning calendar, map and early warning" },
+    { "src": "/static/screens/narrow.png", "sizes": "780x1688", "type": "image/png", "form_factor": "narrow", "label": "FireCal on a phone" }
   ]
 }

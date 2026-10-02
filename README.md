@@ -23,7 +23,7 @@ compares with every past year.
 | **Critical periods** | Season opens / peaks / closes, highest-risk weeks, and today's position in the season |
 | **Early warning** | The last 6 complete days of NASA near-real-time VIIRS detections vs the same dates in every year since 2001 (percentile, status); 30-day climatological outlook |
 | **Responders / scientists / land managers** | "What this means" plain-language briefing written for each audience |
-| Beyond the brief | Live global fire map, shareable links for every view, CSV export, printable report, JSON downloads (website) and an API with `/docs` (local server), installable offline-capable app, light/dark themes, works on phones |
+| Beyond the brief | Live global fire map, shareable links for every view, CSV export, printable report, JSON downloads (website) and an API with `/docs` (local server), installable app on computers, Android and iPhone/iPad (⤓ button: the browser's install prompt where it exists, step-by-step instructions on iOS, Mac Safari, Samsung Internet and Firefox), airplane mode (after one visit the app, world map, fonts and every area opened work offline; "Save all countries for offline" stores every calendar and map layer, ~16 MB), light/dark themes, works on phones |
 
 ## Two editions, one codebase
 

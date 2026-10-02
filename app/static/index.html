@@ -9,7 +9,14 @@
   <meta name="theme-color" content="#9a3412" media="(prefers-color-scheme: light)">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/icon.svg?v={{v}}" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="/static/icon-192.png?v={{v}}">
+  <link rel="icon" href="/static/favicon-32.png?v={{v}}" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v={{v}}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="FireCal">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="application-name" content="FireCal">
+  <meta name="format-detection" content="telephone=no">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap">
@@ -39,6 +46,8 @@
       <datalist id="countryList"></datalist>
     </form>
     <div class="top-actions">
+      <span id="offlineChip" class="offline-chip" hidden>Offline · saved data</span>
+      <button id="installBtn" class="ghost icon install" type="button" aria-label="Install FireCal and use it offline" title="Install the app · use offline" hidden>⤓</button>
       <button id="helpBtn" class="ghost icon" type="button" aria-label="How to use FireCal">?</button>
       <button id="theme" class="ghost icon" type="button" aria-label="Toggle dark mode">◐</button>
     </div>
@@ -261,9 +270,23 @@
       <li><b>Read the calendar.</b> Every month since 2000 appears as one square: darker means more burning. Switch to <b>Anomaly</b> to spot unusual months, and tap a row to open that year day by day.</li>
       <li><b>Plan.</b> <b>Critical periods</b> show when the season opens, peaks and closes. <b>What this means</b> summarizes it for responders, land managers or scientists.</li>
       <li><b>Share.</b> Every view has its own link. Print a report or download the data as CSV.</li>
+      <li><b>Install &amp; offline.</b> Tap <b>⤓</b> at the top to install FireCal on your phone or computer and save every country for airplane mode.</li>
     </ol>
     <p class="hint">A <b>fire cell-day</b> is one 0.1° grid cell (≈ 11 km) with at least one satellite fire detection that day. Press <kbd>/</kbd> to search.</p>
     <form method="dialog"><button id="helpClose" type="submit">Get started</button></form>
+  </dialog>
+  <dialog id="installDlg" class="help" aria-labelledby="installTitle">
+    <h2 id="installTitle">Install FireCal</h2>
+    <div id="installSteps"></div>
+    <h3 class="dlg-h3">Use it offline (airplane mode)</h3>
+    <p>FireCal keeps working without a connection: the app, the world map and every area you have opened are saved on this device. To take <b>every country</b> with you, save them all now (about 16 MB):</p>
+    <div class="offline-row">
+      <button id="saveOffline" type="button">Save all countries for offline</button>
+      <span id="offlineStatus" class="hint"></span>
+    </div>
+    <div class="pbar" id="offlineBar" hidden><i style="width:0%"></i></div>
+    <p class="hint">Live fires need a connection; offline, FireCal shows the last ones it saw. Drawn boxes work offline for the regions you have analyzed before.</p>
+    <form method="dialog"><button type="submit" class="ghost">Close</button></form>
   </dialog>
   <div class="tip" id="tip" role="status"></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

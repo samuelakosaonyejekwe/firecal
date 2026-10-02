@@ -19,6 +19,8 @@
         if (!r.ok) throw new HttpError(r.status, body);
         return body;
       } catch (e) {
+        if (!navigator.onLine && !(e instanceof HttpError))  // airplane mode, and this file isn't saved on the device
+          throw new Error("you're offline and this hasn't been saved on this device yet. Reconnect, or next time use ⤓ → Save all countries before going offline");
         if (i + 1 >= tries || (e instanceof HttpError && e.status < 500)) throw e;
         await new Promise((res) => setTimeout(res, 600 * 2 ** i));
       }

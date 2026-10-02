@@ -57,8 +57,8 @@ def build_app(out: pathlib.Path, version: str):
     (out / "index.html").write_text(html, encoding="utf-8")
     (out / "sw.js").write_text((STATIC / "sw.js").read_text(encoding="utf-8").replace("{{v}}", version), encoding="utf-8")
     man = json.loads((STATIC / "manifest.webmanifest").read_text())
-    man["start_url"], man["scope"] = "./", "./"
-    for icon in man["icons"]:
+    man["start_url"], man["scope"], man["id"] = "./", "./", "./"
+    for icon in man["icons"] + man.get("screenshots", []):
         icon["src"] = icon["src"].lstrip("/")
     write_json(out / "manifest.webmanifest", man)
     shutil.copy(RES / "world.geojson", out / "world.geojson")    # map outlines (1:110m)
