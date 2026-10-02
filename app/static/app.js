@@ -127,16 +127,22 @@ function initMap() {
 
   map.on("moveend", () => { clearTimeout(refreshLayer.t); refreshLayer.t = setTimeout(refreshLayer, 250); });
 
-  // hover: fire cells first, then the country name
-  map.on("mousemove", (e) => {
-    if (drawing) return;
-    const fs = map.queryRenderedFeatures(e.point, { layers: ["live", "cells", "countries-fill"].filter((l) => map.getLayer(l)) });
+  // What a map point shows: the country, and the fire square's value explained in plain words.
+  // Mouse: on hover, and a click opens the country. Touch screens (phones, tablets) have no hover, so a
+  // tap shows the same card, pinned, with an Analyze button (and ✕); dragging the map or tapping
+  // elsewhere closes it.
+  let lastPointer = "mouse";
+  const canvas = map.getCanvas();
+  canvas.addEventListener("pointerdown", (ev) => { lastPointer = ev.pointerType || "mouse"; }, { passive: true });
+  canvas.addEventListener("touchstart", () => { lastPointer = "touch"; }, { passive: true }); // older iOS without pointer events
+  const touchTap = () => lastPointer === "touch" || lastPointer === "pen" || matchMedia("(hover: none)").matches;
+
+  function pointInfo(point) {
+    const fs = map.queryRenderedFeatures(point, { layers: ["live", "cells", "countries-fill"].filter((l) => map.getLayer(l)) });
     const cell = fs.find((f) => f.layer.id === "live" || f.layer.id === "cells");
     const ctry = fs.find((f) => f.layer.id === "countries-fill");
-    map.setFilter("countries-hover", ["==", ["get", "id"], ctry?.properties.id || ""]);
-    map.getCanvas().style.cursor = ctry ? "pointer" : "";
-    if (!ctry && !cell) { hideTip(); return; }
-    let html = ctry ? `<b>${esc(ctry.properties.name)}</b>${state.byId[ctry.properties.id]?.ready ? "" : ' <span class="muted">· history loads on first click</span>'}` : "";
+    if (!ctry && !cell) return null;
+    let html = ctry ? `<b>${esc(ctry.properties.name)}</b>${state.byId[ctry.properties.id]?.ready ? "" : ' <span class="muted">· history loads on first open</span>'}` : "";
     if (cell) {
       const p = cell.properties;
       const word = scaleWord(p.v);
@@ -152,17 +158,32 @@ function initMap() {
       }
       html += `<br><span class="muted">${lat(p.lat)}, ${lon(p.lon)}</span>`;
     }
-    html += ctry ? `<br><span class="muted">Click to analyze</span>` : "";
-    showTip(e.originalEvent, html);
-  });
-  map.getCanvas().addEventListener("mouseleave", () => { hideTip(); map.setFilter("countries-hover", ["==", ["get", "id"], ""]); });
+    return { html, ctry: ctry && { id: ctry.properties.id, name: ctry.properties.name } };
+  }
 
-  // click a country to analyse it
+  map.on("mousemove", (e) => {
+    if (drawing || tipPinned || touchTap()) return;
+    const info = pointInfo(e.point);
+    map.setFilter("countries-hover", ["==", ["get", "id"], info?.ctry?.id || ""]);
+    canvas.style.cursor = info?.ctry ? "pointer" : "";
+    if (!info) { hideTip(); return; }
+    showTip(e.originalEvent, info.html + (info.ctry ? `<br><span class="muted">Click to analyze</span>` : ""));
+  });
+  canvas.addEventListener("mouseleave", () => { if (!tipPinned) { hideTip(); map.setFilter("countries-hover", ["==", ["get", "id"], ""]); } });
+
   map.on("click", (e) => {
     if (drawing) return;
-    const f = map.queryRenderedFeatures(e.point, { layers: ["countries-fill"] })[0];
-    if (f) { hideTip(); selectAOI({ country: f.properties.id }); }
+    const info = pointInfo(e.point);
+    if (touchTap()) { // phones and tablets: explain first, analyze on request
+      if (!info) { hideTip(); return; }
+      map.setFilter("countries-hover", ["==", ["get", "id"], info.ctry?.id || ""]);
+      const r = canvas.getBoundingClientRect();
+      pinTip({ clientX: r.left + e.point.x, clientY: r.top + e.point.y }, info.html, info.ctry);
+      return;
+    }
+    if (info?.ctry) { hideTip(); selectAOI({ country: info.ctry.id }); }
   });
+  map.on("movestart", (e) => { if (e.originalEvent) hideTip(); }); // the user dragged or zoomed the map
 
   // rectangle drawing (mouse + touch)
   const start = (e) => { if (!drawing) return; e.preventDefault(); dragStart = e.lngLat; };
@@ -301,12 +322,28 @@ function refreshBasemap() {
   refreshLayer();
 }
 
+let tipPinned = false;
 function showTip(ev, html) {
   const t = $("tip"); t.innerHTML = html; t.style.display = "block";
-  const x = Math.min(ev.clientX + 14, innerWidth - t.offsetWidth - 8), y = Math.min(ev.clientY + 14, innerHeight - t.offsetHeight - 8);
+  const x = Math.max(8, Math.min(ev.clientX + 14, innerWidth - t.offsetWidth - 8));
+  const y = Math.max(8, Math.min(ev.clientY + 14, innerHeight - t.offsetHeight - 8));
   t.style.left = x + "px"; t.style.top = y + "px";
 }
-function hideTip() { $("tip").style.display = "none"; }
+function pinTip(ev, html, ctry) { // touch: the card stays, with buttons
+  const t = $("tip");
+  tipPinned = true; t.classList.add("pinned");
+  showTip(ev, `<button type="button" class="tip-x ghost" aria-label="Close">✕</button>${html}` +
+    (ctry ? `<div class="tip-actions"><button type="button" class="tip-go">Analyze ${esc(ctry.name)}</button></div>` : ""));
+  t.querySelector(".tip-x").onclick = hideTip;
+  const go = t.querySelector(".tip-go");
+  if (go) go.onclick = () => { hideTip(); selectAOI({ country: ctry.id }); };
+}
+function hideTip() {
+  const t = $("tip"); t.style.display = "none"; t.classList.remove("pinned"); tipPinned = false;
+  map?.getLayer("countries-hover") && map.setFilter("countries-hover", ["==", ["get", "id"], ""]);
+}
+// a tap anywhere outside the pinned card closes it
+document.addEventListener("pointerdown", (ev) => { if (tipPinned && !$("tip").contains(ev.target) && !ev.target.closest?.("#map")) hideTip(); }, { passive: true });
 
 // ───────────────────────── loading an AOI ─────────────────────────
 function setBusy(on, msg) {

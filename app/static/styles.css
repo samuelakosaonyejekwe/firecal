@@ -206,6 +206,11 @@ td.num, th.num { text-align: right; }
        border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 12px;
        box-shadow: 0 4px 16px rgba(0,0,0,.15); max-width: 260px; }
 
+.tip.pinned { pointer-events: auto; padding: 12px 14px; font-size: 13.5px; line-height: 1.5; max-width: min(320px, calc(100vw - 16px));
+              border-radius: 14px; box-shadow: var(--shadow-lg); }
+.tip .tip-x { float: right; margin: -6px -8px 4px 8px; min-height: 32px; width: 32px; padding: 0; border-radius: 999px; }
+.tip .tip-actions { margin-top: 10px; }
+.tip .tip-go { width: 100%; min-height: 40px; }
 .maplibregl-ctrl-attrib { font-size: 10px; }
 
 /* ── header search / actions ── */
