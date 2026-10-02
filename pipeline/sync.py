@@ -22,6 +22,7 @@ import pathlib
 import shutil
 import subprocess
 import tempfile
+import time
 
 from pipeline.build import build_country
 from pipeline.fetch import DATA, fetch_country
@@ -34,8 +35,21 @@ UNAVAILABLE = "unavailable.json"  # release asset: countries NASA has no usable 
 PERMANENT = ("no VIIRS archive", "has no MODIS archive")  # failures that retrying won't fix
 
 
-def gh(*args) -> str:
-    return subprocess.run(["gh", *args], cwd=ROOT, check=True, text=True, capture_output=True).stdout
+TRANSIENT = ("HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504", "timeout", "connection reset", "EOF")
+
+
+def gh(*args, waits=(5, 20, 60)) -> str:
+    """Run `gh`; GitHub's API sometimes fails for a moment (5xx, timeouts), so those are retried."""
+    for wait in (*waits, None):
+        try:
+            return subprocess.run(["gh", *args], cwd=ROOT, check=True, text=True, capture_output=True, timeout=1800).stdout
+        except subprocess.CalledProcessError as e:
+            if wait is None or not any(t.lower() in (e.stderr or "").lower() for t in TRANSIENT):
+                raise
+        except subprocess.TimeoutExpired:
+            if wait is None:
+                raise
+        time.sleep(wait)
 
 
 def github_available() -> bool:

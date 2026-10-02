@@ -87,7 +87,10 @@ jobs:
       - name: Download every published country
         run: |
           mkdir -p dl data/countries
-          gh release download firecal-data --dir dl --pattern '*.grid_daily.parquet'
+          for i in 1 2 3 4 5; do  # GitHub's API sometimes answers 500 for a moment: retry
+            gh release download firecal-data --dir dl --pattern '*.grid_daily.parquet' --skip-existing && break
+            [ "$i" = 5 ] && exit 1; echo "download interrupted; retrying"; sleep $((i * 20))
+          done
           for f in dl/*.grid_daily.parquet; do
             c=$(basename "$f" .grid_daily.parquet); mkdir -p "data/countries/$c"; mv "$f" "data/countries/$c/grid_daily.parquet"
           done

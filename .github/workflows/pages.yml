@@ -83,7 +83,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p dl data/countries
-          gh release download firecal-data --dir dl --pattern '*.parquet' --pattern 'unavailable.json'
+          # GitHub's API sometimes answers 500 for a moment: retry, keeping files already downloaded
+          for i in 1 2 3 4 5; do
+            gh release download firecal-data --dir dl --pattern '*.parquet' --pattern 'unavailable.json' --skip-existing && break
+            [ "$i" = 5 ] && exit 1; echo "download interrupted; retrying"; sleep $((i * 20))
+          done
           [ -f dl/unavailable.json ] && mv dl/unavailable.json data/unavailable.json
           for f in dl/*.grid_daily.parquet; do
             c=$(basename "$f" .grid_daily.parquet); mkdir -p "data/countries/$c"

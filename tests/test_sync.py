@@ -153,3 +153,28 @@ def test_unavailable_countries_are_recorded_once(env):
     again = sync.GitHubStore().unavailable()
     assert set(again) == {"Tuvalu", "Nauru"} and fake.exists
     assert all(any(p in r for p in sync.PERMANENT) for r in again.values())
+
+
+def test_momentary_github_errors_are_retried(monkeypatch):
+    calls = []
+
+    def flaky(cmd, **kw):
+        calls.append(cmd)
+        if len(calls) < 3:
+            raise sync.subprocess.CalledProcessError(1, cmd, stderr="HTTP 500 (https://api.github.com/...)")
+        return sync.subprocess.CompletedProcess(cmd, 0, stdout="ok")
+    monkeypatch.setattr(sync.subprocess, "run", flaky)
+    monkeypatch.setattr(sync.time, "sleep", lambda s: None)
+    assert sync.gh("release", "view", waits=(1, 1, 1)) == "ok" and len(calls) == 3
+
+
+def test_real_errors_are_not_retried(monkeypatch):
+    calls = []
+
+    def missing(cmd, **kw):
+        calls.append(cmd)
+        raise sync.subprocess.CalledProcessError(1, cmd, stderr="release not found")
+    monkeypatch.setattr(sync.subprocess, "run", missing)
+    with pytest.raises(sync.subprocess.CalledProcessError):
+        sync.gh("release", "view")
+    assert len(calls) == 1
