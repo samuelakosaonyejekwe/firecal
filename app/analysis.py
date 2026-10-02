@@ -122,6 +122,7 @@ class Store:
         self._ready: dict[str, float] = {}
         self._extent: dict[str, list] = {}
         self._wide_view: dict[str, list] = {}
+        self._grid_locks: dict = {}
         self._prior = None
         self.end = pd.Timestamp("2024-12-31")
         self.refresh()
@@ -508,6 +509,14 @@ class Store:
         key = (cid, self._ready.get(cid), year, month, self.prior())
         if key in self._grids:
             return self._grids[key]
+        with self._lock:  # requests asking for the same layer at once share one computation
+            lock = self._grid_locks.setdefault(key, threading.Lock())
+        with lock:
+            if key in self._grids:
+                return self._grids[key]
+            return self._compute_grid(cid, year, month, key)
+
+    def _compute_grid(self, cid, year, month, key) -> pd.DataFrame:
         # disk cache survives restarts; invalidated when the grid is rebuilt or the prior changes
         tag = hashlib.sha1(("%.6f/%.6f" % self.prior() + CODE_VERSION).encode()).hexdigest()[:8]
         disk = self.cdir / cid / "grid_cache" / tag / f"{year or 'all'}_{month or 'all'}.parquet"
@@ -595,6 +604,14 @@ class Store:
             self._mem.put(key, set(map(tuple, _rows(f"SELECT DISTINCT yi, xi FROM '{self.path(cid)}'"))))
         return self._mem[key]
 
+    def _all_static(self) -> pd.DataFrame | None:
+        """Industrial-heat cells of every available country (yi, xi, _static), cached per data version."""
+        key = ("static-all", tuple(sorted(self._ready.items())))
+        if key not in self._mem:
+            files = [p.as_posix() for p in self.cdir.glob("*/static_cells.parquet")]
+            self._mem.put(key, _df(f"SELECT DISTINCT yi, xi, 1 AS _static FROM read_parquet({files})") if files else None)
+        return self._mem[key]
+
     def static_cells(self, ids) -> set:
         out = set()
         for c in ids:
@@ -606,6 +623,10 @@ class Store:
     def live(self, nrt: pd.DataFrame, bbox) -> dict:
         y0, y1, x0, x1 = self._cell_bounds(bbox)
         g = nrt[(nrt.yi >= y0) & (nrt.yi <= y1) & (nrt.xi >= x0) & (nrt.xi <= x1)]
+        mask = self._all_static()  # gas flares and industrial heat are not wildfires (as on the website)
+        if mask is not None and len(g):
+            g = g.merge(mask, on=["yi", "xi"], how="left")
+            g = g[g._static.isna()]
         df = g.groupby(["xi", "yi"], as_index=False).n.sum().rename(columns={"n": "val"})
         return {**self._coarsen(df, limit=15000, how="sum"), "days": sorted({d.date().isoformat() for d in g.d})}
 

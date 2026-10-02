@@ -139,10 +139,16 @@ function initMap() {
     let html = ctry ? `<b>${esc(ctry.properties.name)}</b>${state.byId[ctry.properties.id]?.ready ? "" : ' <span class="muted">· history loads on first click</span>'}` : "";
     if (cell) {
       const p = cell.properties;
-      if (cell.layer.id === "live") html += `<br>${fmt(p.v)} VIIRS detections, last 7 days`;
-      else {
-        const y = $("mapYear").value, m = $("mapMonth").value;
-        html += `<br>${fmt(p.v, 1)} fire days per 0.1° cell (${y === "all" ? "mean per year" : `${m !== "0" ? MONTHS[m - 1] + " " : ""}${y}`})`;
+      const word = scaleWord(p.v);
+      if (cell.layer.id === "live") {
+        html += `<br><b>${fmt(p.v)} detection${p.v === 1 ? "" : "s"}</b> in the last 7 days${word ? ` · ${word}` : ""}`;
+        html += `<br><span class="muted">times satellites saw fire in this ≈ 11 km square this week</span>`;
+      } else {
+        const y = $("mapYear").value, m = +$("mapMonth").value, v = fmt(p.v, 1);
+        const [head, line] = y !== "all" ? [`${v} fire days in ${y}`, `satellites saw fire in this ≈ 11 km square on ${v} days of ${y}`]
+          : m ? [`${v} fire days in ${MONTHS_LONG[m - 1]}, per year`, `on average each year since 2000, satellites saw fire in this ≈ 11 km square on ${v} days of ${MONTHS_LONG[m - 1]}`]
+          : [`${v} fire days a year`, `on average since 2000, satellites saw fire in this ≈ 11 km square on ${v} days each year`];
+        html += `<br><b>${head}</b>${word ? ` · ${word}` : ""}<br><span class="muted">${line}</span>`;
       }
       html += `<br><span class="muted">${lat(p.lat)}, ${lon(p.lon)}</span>`;
     }
@@ -238,7 +244,8 @@ async function refreshLayer() {
       map.setPaintProperty("live", "circle-stroke-color", css("--surface"));
       map.setPaintProperty("live", "circle-stroke-width", 0.5);
       const days = g.days?.length ? `${niceDate(g.days[0], false)} – ${niceDate(g.days[g.days.length - 1])}` : "";
-      $("mapLegend").innerHTML = mapLegend(r.slice(3), ["few", "some", "many", "very many"], "1", `${fmt(max)}+`,
+      mapScale = { max, words: ["few", "some", "many", "very many"] };
+      $("mapLegend").innerHTML = mapLegend(r.slice(3), mapScale.words, "1", `${fmt(max)}+`,
         `VIIRS detections per 0.1° cell · ${days}`,
         "<b>Brighter = more fire.</b> Each dot is a ≈ 11 km square, coloured by how many times satellites detected fire there in the last 7 days (provisional data).");
     } else {
@@ -252,8 +259,9 @@ async function refreshLayer() {
       const max = Math.max(g.max, 0.5), r = ramp();
       const stops = r.slice(1).flatMap((c, i) => [(max * (i + 1)) / (r.length - 1), c]);
       map.setPaintProperty("cells", "fill-color", ["interpolate", ["linear"], ["get", "v"], 0, r[0], ...stops]);
+      mapScale = { max, words: ["rare", "occasional", "frequent", "very frequent"] };
       $("mapLegend").innerHTML = g.cells.length
-        ? mapLegend(r, ["rare", "occasional", "frequent", "very frequent"], "0", `${fmt(max, 1)}+`,
+        ? mapLegend(r, mapScale.words, "0", `${fmt(max, 1)}+`,
             y !== "all" ? `fire days in ${y}` : m ? `fire days per year in ${MONTHS_LONG[m - 1]}` : "fire days per year",
             `<b>Brighter = burns more often.</b> Each square (0.1°, ≈ 11 km) is coloured by how many days ${
               y !== "all" ? `in ${esc(y)}` : m ? `of ${MONTHS_LONG[m - 1]}, on average each year,` : "a year, on average since 2000,"
@@ -265,6 +273,10 @@ async function refreshLayer() {
     if (token === refreshLayer.token) $("mapLegend").textContent = live ? "Live feed is warming up. Try again in a minute." : `Map layer unavailable: ${e.message}`;
   }
 }
+
+// the legend's plain word for a map value (rare … very frequent), using the scale currently shown
+let mapScale = null;
+const scaleWord = (v) => mapScale ? mapScale.words[Math.min(mapScale.words.length - 1, Math.floor((v / mapScale.max) * mapScale.words.length))] : "";
 
 // map legend: the colour bar with plain words along it, the numbers at its ends, and one line of explanation
 function mapLegend(colors, words, lo, hi, unit, explain) {

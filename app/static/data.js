@@ -198,13 +198,16 @@
   }
 
   const MAX_DETAIL_TILES = 12, MAX_MAP_CELLS = 20000; // as Store._coarsen on the server
-  function coarsen(cells) { // merge f×f blocks (mean per 0.1° cell) until at most MAX_MAP_CELLS squares
+  const LIVE_MAX_TILES = 60; // live tiles hold only this week's fires (a few KB each), so many fit
+  // merge f×f blocks until at most `limit` squares: "mean" per 0.1° cell (history) or "sum" (live detections)
+  function coarsen(cells, limit = MAX_MAP_CELLS, how = "mean") {
     let f = 1, out = cells;
-    while (out.length > MAX_MAP_CELLS) {
+    while (out.length > limit) {
       f += 1;
       const sums = new Map();
       for (const [xi, yi, v] of cells) { const k = `${Math.floor(xi / f)},${Math.floor(yi / f)}`; sums.set(k, (sums.get(k) || 0) + v); }
-      out = [...sums].map(([k, v]) => { const [a, b] = k.split(",").map(Number); return [a, b, Math.round((v / (f * f)) * 100) / 100]; });
+      const div = how === "mean" ? f * f : 1;
+      out = [...sums].map(([k, v]) => { const [a, b] = k.split(",").map(Number); return [a, b, Math.round((v / div) * 100) / 100]; });
     }
     return { cell: f / CELL, cells: out };
   }
@@ -279,19 +282,24 @@
       const cells = parts.flatMap((p) => p.cells).filter(([xi, yi]) => xi >= x0 && xi <= x1 && yi >= y0 && yi <= y1);
       return { max: ix.max, ...coarsen(cells) };
     },
-    async live(bbox, zoom) {
+    async live(bbox) {
+      // as the server (Store.live): detections per 0.1° cell in view, merged only beyond 15,000 squares,
+      // coloured up to the 99th percentile; the world overview when the view needs too many tiles
       const lm = (await liveSource()).meta;
-      if (zoom < 4) return { ...(await liveOverview()), fetched_at: lm.fetched_at };
       const ix = await liveIndex();
       const { y0, y1, x0, x1 } = cellBounds(bbox), want = [], T = ix.tile_cells;
-      for (let ty = Math.floor(y0 / T); ty <= Math.floor(y1 / T); ty++)
-        for (let tx = Math.floor(x0 / T); tx <= Math.floor(x1 / T); tx++) if (ix.tiles[`${ty}_${tx}`] != null) want.push(`${ty}_${tx}`);
+      const span = (Math.floor(y1 / T) - Math.floor(y0 / T) + 1) * (Math.floor(x1 / T) - Math.floor(x0 / T) + 1);
+      if (span <= 4 * LIVE_MAX_TILES)
+        for (let ty = Math.floor(y0 / T); ty <= Math.floor(y1 / T); ty++)
+          for (let tx = Math.floor(x0 / T); tx <= Math.floor(x1 / T); tx++) if (ix.tiles[`${ty}_${tx}`] != null) want.push(`${ty}_${tx}`);
+      if (span > 4 * LIVE_MAX_TILES || want.length > LIVE_MAX_TILES) return { ...(await liveOverview()), fetched_at: lm.fetched_at };
       const sums = new Map();
       for (const t of await Promise.all(want.map(liveTile)))
-        for (const [, xi, yi, n] of t.rows) { const k = `${xi},${yi}`; sums.set(k, (sums.get(k) || 0) + n); }
-      const cells = [...sums].map(([k, v]) => { const [xi, yi] = k.split(",").map(Number); return [xi, yi, v]; });
-      const vals = cells.map((c) => c[2]).sort((a, b) => a - b);
-      return { cell: 0.1, max: vals.length ? vals[Math.floor(0.99 * (vals.length - 1))] : 0, cells, days: lm.days, fetched_at: lm.fetched_at };
+        for (const [, xi, yi, n] of t.rows)
+          if (xi >= x0 && xi <= x1 && yi >= y0 && yi <= y1) { const k = `${xi},${yi}`; sums.set(k, (sums.get(k) || 0) + n); }
+      const c = coarsen([...sums].map(([k, v]) => { const [xi, yi] = k.split(",").map(Number); return [xi, yi, v]; }), 15000, "sum");
+      const vals = c.cells.map((x) => x[2]).sort((a, b) => a - b);
+      return { ...c, max: Math.round(FireLive.quantile(vals, 0.99) * 100) / 100, days: lm.days, fetched_at: lm.fetched_at };
     },
     async locate(lon, lat) {
       const f = (await shapes()).features.find((f) => FireGeo.pointTouches(f, lon, lat));
