@@ -228,7 +228,7 @@
   const MAX_DETAIL_TILES = 12, MAX_MAP_CELLS = 20000; // as Store._coarsen on the server
   const LIVE_MAX_TILES = 60; // live tiles hold only this week's fires (a few KB each), so many fit
   // merge f×f blocks until at most `limit` squares: "mean" per 0.1° cell (history) or "sum" (live detections)
-  function coarsen(cells, limit = MAX_MAP_CELLS, how = "mean") {
+  function coarsen(cells, limit = MAX_MAP_CELLS, how = "mean", base = 1 / CELL) {
     let f = 1, out = cells;
     while (out.length > limit) {
       f += 1;
@@ -237,8 +237,11 @@
       const div = how === "mean" ? f * f : 1;
       out = [...sums].map(([k, v]) => { const [a, b] = k.split(",").map(Number); return [a, b, Math.round((v / div) * 100) / 100]; });
     }
-    return { cell: f / CELL, cells: out };
+    return { cell: f * base, cells: out };
   }
+  // squares of a layer (in `cell`-degree units) that fall in the view, plus a one-square margin
+  const inView = (cells, [w, s, e, n], cell) =>
+    cells.filter(([x, y]) => (x + 1) * cell >= w - cell && x * cell <= e + cell && (y + 1) * cell >= s - cell && y * cell <= n + cell);
 
   const Static = {
     mode: "static",
@@ -299,7 +302,11 @@
       // views), merged into coarser squares only as far as needed to stay under MAX_MAP_CELLS; the 0.5°
       // world overview otherwise
       const key = year ? `y${year}` : month ? `m${String(month).padStart(2, "0")}` : "all";
-      const overview = () => once(`map:${key}:ov`, () => fetchJSON(`data/map/${key}/overview.json`));
+      // the world overview, cut to the view and capped like the server, so a big country draws at once
+      const overview = async () => {
+        const ov = await once(`map:${key}:ov`, () => fetchJSON(`data/map/${key}/overview.json`));
+        return { max: ov.max, ...coarsen(inView(ov.cells, bbox, ov.cell), MAX_MAP_CELLS, "mean", ov.cell) };
+      };
       const ix = await once(`map:${key}:ix`, () => fetchJSON(`data/map/${key}/index.json`)).catch(() => null);
       if (!ix) return overview();
       const have = new Set(ix.tiles), { y0, y1, x0, x1 } = cellBounds(bbox), want = [], T = ix.tile_cells || 100;
@@ -323,10 +330,11 @@
       if (span <= 4 * LIVE_MAX_TILES)
         for (let ty = Math.floor(y0 / T); ty <= Math.floor(y1 / T); ty++)
           for (let tx = Math.floor(x0 / T); tx <= Math.floor(x1 / T); tx++) if (ix.tiles[`${ty}_${tx}`] != null) want.push(`${ty}_${tx}`);
-      if (span > 4 * LIVE_MAX_TILES || want.length > LIVE_MAX_TILES) return { ...(await liveOverview()), fetched_at: lm.fetched_at };
+      const ovInView = async () => { const ov = await liveOverview(); return { ...ov, cells: inView(ov.cells, bbox, ov.cell), fetched_at: lm.fetched_at }; };
+      if (span > 4 * LIVE_MAX_TILES || want.length > LIVE_MAX_TILES) return ovInView();
       let tiles;
       try { tiles = await Promise.all(want.map(liveTile)); }
-      catch (e) { if (!navigator.onLine) return { ...(await liveOverview()), fetched_at: lm.fetched_at }; throw e; } // offline: saved overview
+      catch (e) { if (!navigator.onLine) return ovInView(); throw e; } // offline: the saved overview
       const sums = new Map();
       for (const t of tiles)
         for (const [, xi, yi, n] of t.rows)
