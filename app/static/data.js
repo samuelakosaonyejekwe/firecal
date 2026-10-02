@@ -117,7 +117,9 @@
   // rules as the cloud); when GitHub's published copy catches up, it switches back. App: onLiveUpdate.
   const RECHECK_MS = 10 * 60 * 1000, GITHUB_GRACE_MS = 15 * 60 * 1000, liveListeners = [];
   let published = null, direct = null, checking = null, timer = null;
-  const newer = (a, b) => !!a?.latest_detection && (!b?.latest_detection || a.latest_detection > b.latest_detection);
+  // is live data `a` newer than `b`? (published meta: latest_detection; NASA file parsed by live.js: latest)
+  const latestOf = (x) => x?.latest_detection ?? x?.latest ?? null;
+  const newer = (a, b) => !!latestOf(a) && (!latestOf(b) || latestOf(a) > latestOf(b));
   function resetLive() { for (const k of [...cache.keys()]) if (k.startsWith("live")) cache.delete(k); }
   function announce(meta) { for (const f of liveListeners) try { f(meta); } catch (e) { console.error(e); } }
 
