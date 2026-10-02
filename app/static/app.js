@@ -1052,7 +1052,7 @@ function openInstall() {
     $("installSteps").innerHTML = installSteps();
   };
   const local = FireData.mode !== "static";
-  $("saveOffline").hidden = local;
+  $("saveOffline").hidden = local; $("offlineIntro").hidden = local;
   if (local) $("offlineStatus").textContent = "This copy of FireCal runs on this computer, so it already works without internet; only live fires need a connection.";
   else offlineCount().then(renderOfflineStatus);
   const d = $("installDlg"); if (d.showModal) d.showModal(); else d.setAttribute("open", "");
