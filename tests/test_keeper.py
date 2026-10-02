@@ -1,5 +1,6 @@
 """pipeline/keeper.py: asks GitHub for a website rebuild only when the site is genuinely behind NASA."""
 import datetime as dt
+import json
 
 import pytest
 
@@ -19,7 +20,13 @@ def world(monkeypatch):
                         lambda w=keeper.WORKFLOW: state["in_flight"] if w == keeper.WORKFLOW else state["watcher"])
     state["workflow_state"], state["enabled"] = "active", 0
 
+    recent = (NOW - dt.timedelta(days=3)).isoformat().replace("+00:00", "Z")
+    state["world_runs"] = [{"displayTitle": "Build world (update)", "status": "completed", "conclusion": "success", "createdAt": recent}]
+    state["world_started"] = []
+
     def fake_gh(*args):
+        if args[:2] == ("run", "list"):
+            return json.dumps(state["world_runs"])
         if args[0] == "api":
             return '{"state": "%s"}' % state["workflow_state"]
         if args[:2] == ("workflow", "enable"):
@@ -27,7 +34,9 @@ def world(monkeypatch):
             state["workflow_state"] = "active"
             return ""
         assert args[:2] == ("workflow", "run")
-        if args[2] == keeper.WATCHER:
+        if args[2] == keeper.WORLD:
+            state["world_started"].append(args[3:])
+        elif args[2] == keeper.WATCHER:
             state["watchers_started"] += 1
             state["watcher"] = True
         else:
@@ -115,3 +124,21 @@ def test_restamped_unchanged_file_is_not_a_reason_to_rebuild(world):
     world["site"], world["site_bytes"], world["nasa_bytes"] = NOW - dt.timedelta(hours=3), 1500, 1500
     msg, _ = keeper.check_once()
     assert "current" in msg and world["dispatched"] == 0
+
+
+def test_world_update_started_when_the_monthly_schedule_never_ran(world):
+    old = (NOW - dt.timedelta(days=40)).isoformat().replace("+00:00", "Z")
+    world["world_runs"] = [{"displayTitle": "Build world (update)", "status": "completed", "conclusion": "success", "createdAt": old},
+                           {"displayTitle": "Build world (missing countries)", "status": "completed", "conclusion": "success",
+                            "createdAt": NOW.isoformat().replace("+00:00", "Z")}]  # a missing-countries run doesn't count
+    msg, _ = keeper.check_once()
+    assert world["world_started"] == [("-f", "update=true")] and "world update" in msg
+
+
+def test_no_world_update_while_one_is_recent_or_running(world):
+    keeper.check_once()
+    assert world["world_started"] == []
+    world["world_runs"] = [{"displayTitle": "Build world (missing countries)", "status": "in_progress", "conclusion": None,
+                            "createdAt": NOW.isoformat().replace("+00:00", "Z")}]
+    keeper.check_once()
+    assert world["world_started"] == []

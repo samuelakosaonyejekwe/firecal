@@ -4,8 +4,10 @@
 # FIRECAL_PUBLISH_TOKEN secret, a fine-grained token limited to this repository), and the website
 # is rebuilt. A monthly run picks up NASA's new yearly archives (--update). If countries are still
 # missing afterwards (e.g. a machine lost its connection to NASA), the run starts the next attempt
-# by itself on fresh machines, up to 3 attempts.
+# by itself on fresh machines, up to 3 attempts. GitHub's schedule is best-effort, so the live-fire
+# watcher (pipeline/keeper.py) also starts an update run if none has succeeded for 35 days.
 name: Build world
+run-name: "Build world (${{ (github.event_name == 'schedule' || inputs.update == 'true') && 'update' || 'missing countries' }})"
 
 on:
   workflow_dispatch:
@@ -13,6 +15,9 @@ on:
       attempt:
         description: "Retry number (set automatically when a run starts the next one)"
         default: "1"
+      update:
+        description: "Also rebuild countries when NASA has published a new yearly archive"
+        default: "false"
   schedule:
     - cron: "17 3 2 * *"   # monthly, off-peak: pick up new NASA yearly archives
 
@@ -51,7 +56,7 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Build and publish this shard's countries
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.update }}" = "true" ]; then
             python pipeline/world.py --shard ${{ matrix.shard }}/10 --update
           else
             python pipeline/world.py --shard ${{ matrix.shard }}/10 --skip-published

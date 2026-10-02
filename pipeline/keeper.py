@@ -32,6 +32,7 @@ from app.feeds import newest  # noqa: E402
 from pipeline.sync import WORKFLOW, gh, github_available  # noqa: E402
 
 WATCHER = "live.yml" # the cloud watcher workflow
+WORLD = "world.yml"  # the cloud world build
 INTERVAL = 15 * 60   # seconds between checks on this computer
 WATCH_EVERY = 5 * 60 # seconds between checks in the cloud watcher
 GRACE = 20           # minutes to leave GitHub's own schedule before stepping in (this computer)
@@ -68,6 +69,23 @@ def build_in_flight(workflow: str = WORKFLOW) -> bool:
     return any(r["status"] in ACTIVE for r in runs)
 
 
+UPDATE_EVERY = 35  # days: start the world update if GitHub's monthly schedule hasn't run it
+
+
+def ensure_world_update() -> str | None:
+    """Pick up NASA's new yearly archives even if GitHub's monthly schedule never fires."""
+    runs = json.loads(gh("run", "list", "--workflow", WORLD, "--limit", "40", "--json", "displayTitle,status,conclusion,createdAt"))
+    if any(r["status"] in ACTIVE for r in runs):
+        return None
+    done = [dt.datetime.fromisoformat(r["createdAt"].replace("Z", "+00:00")) for r in runs
+            if "update" in r["displayTitle"] and r["conclusion"] == "success"]
+    last = max(done) if done else None
+    if last and dt.datetime.now(dt.timezone.utc) - last < dt.timedelta(days=UPDATE_EVERY):
+        return None
+    gh("workflow", "run", WORLD, "-f", "update=true")
+    return f"no world update for over {UPDATE_EVERY} days; started one"
+
+
 def ensure_watcher() -> str | None:
     """Start the cloud watcher if none is running or queued (it normally hands over to itself)."""
     if os.environ.get("FIRECAL_WATCHER") == "1" or build_in_flight(WATCHER):
@@ -88,7 +106,7 @@ def ensure_schedule_enabled() -> str | None:
 def check_once(last_request: dt.datetime | None = None, grace: int = GRACE) -> tuple[str, dt.datetime | None]:
     """One check. Returns (what happened, time of the last rebuild request)."""
     notes = []
-    for fix in (ensure_schedule_enabled, ensure_watcher):
+    for fix in (ensure_schedule_enabled, ensure_watcher, ensure_world_update):
         try:
             if note := fix():
                 notes.append(note)
