@@ -19,6 +19,7 @@ import json
 import pathlib
 import sys
 import tempfile
+import time
 import urllib.request
 
 import duckdb
@@ -97,7 +98,17 @@ def _unchanged(out: pathlib.Path, first, size) -> bool:
 
 def keep_published(site_url: str, out: pathlib.Path, build: pathlib.Path):
     """Copy the live files the website currently shows (meta, overview, countries, every tile)."""
-    get = lambda path: json.load(urllib.request.urlopen(site_url.rstrip("/") + "/data/live/" + path, timeout=60))  # noqa: E731
+    def get(path, waits=(5, 15, 30, 60)):  # GitHub Pages can answer 503 for a moment: retry
+        for wait in (*waits, None):
+            try:
+                url = site_url.rstrip("/") + "/data/live/" + path
+                if url.startswith("http"):
+                    url += f"?nocache={int(time.time())}"  # never a stale CDN copy
+                return json.load(urllib.request.urlopen(url, timeout=60))
+            except Exception:
+                if wait is None:
+                    raise
+                time.sleep(wait)
     for name in ("meta.json", "overview.json", "countries.json", "tiles/index.json"):
         write(out / name, get(name))
     for t in get("tiles/index.json")["tiles"]:
