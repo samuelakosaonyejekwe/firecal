@@ -13,23 +13,43 @@ on:
         description: "How long this watcher runs before handing over (default 320)"
         default: "320"
   schedule:
-    # restarts the watcher if it ever stopped; while one is running, this run waits in the queue and is replaced by
-    # the next request (GitHub lists it as "cancelled"), so at most one watcher ever runs
+    # restarts the watcher if it ever stopped; while one is running, the scheduled run ends at once (job "needed")
     - cron: "37 */2 * * *"
 
 permissions:
   contents: read
-
-concurrency:
-  group: live-watcher
-  cancel-in-progress: false   # a newer request waits for the running watcher instead of stopping it
+  actions: read   # to see whether a watcher is already running (job "needed")
 
 defaults:
   run:
     shell: bash   # -eo pipefail: a failing command inside a pipe (e.g. `… | tee`) fails the step
 
 jobs:
+  # The schedule only restarts a watcher that stopped: with one running, a scheduled run ends here, green. (Hand-overs
+  # and the keeper start a watcher only when needed, so they always go ahead.) No concurrency group: GitHub would cancel
+  # the waiting runs, leaving grey runs in the history.
+  needed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - name: Is a watcher already running?
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          others=0
+          if [ "$EVENT" = "schedule" ]; then
+            others=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow live.yml --limit 20 --json databaseId,status \
+                     --jq "[.[] | select(.databaseId != $GITHUB_RUN_ID and .status != \"completed\")] | length" || echo 0)
+          fi
+          if [ "$others" = "0" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; echo "a watcher is already running"; fi
+
   watch:
+    needs: needed
+    if: needs.needed.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 345
     env:   # the publishing token is given only to the steps that use it (not to pip install)

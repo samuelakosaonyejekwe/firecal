@@ -16,17 +16,34 @@ permissions:
   contents: read
   pages: write
   id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
+  actions: read   # to see whether an older website run is still working (job "queue")
 
 defaults:
   run:
     shell: bash   # -eo pipefail: a failing command inside a pipe (e.g. `… | tee`) fails the step
 
 jobs:
+  # One website run at a time, without cancelling anyone: GitHub's concurrency groups cancel a waiting run when a
+  # newer one arrives (red/grey runs, and a push could go unpublished), so each run waits here for older ones instead.
+  queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Wait for older website runs to finish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 140); do  # up to ~70 minutes, then go ahead anyway
+            older=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow pages.yml --limit 30 --json databaseId,status \
+                    --jq "[.[] | select(.databaseId < $GITHUB_RUN_ID and .status != \"completed\")] | length" || echo 0)
+            [ "$older" = "0" ] && exit 0
+            [ "$i" = 1 ] && echo "waiting for $older older website run(s) to finish"
+            sleep 30
+          done
+          echo "::notice::older website runs still busy after 70 minutes; going ahead"
+
   publish:
+    needs: queue
     runs-on: ubuntu-latest
     timeout-minutes: 120
     environment:

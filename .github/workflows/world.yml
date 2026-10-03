@@ -23,17 +23,34 @@ on:
 
 permissions:
   contents: read
-
-concurrency:
-  group: world
-  cancel-in-progress: false
+  actions: read   # to see whether an older world build is still working (job "queue")
 
 defaults:
   run:
     shell: bash   # -eo pipefail: a failing command inside a pipe (e.g. `… | tee`) fails the step
 
 jobs:
+  # One world build at a time, without cancelling anyone (a concurrency group would cancel a waiting run when a newer
+  # one arrives): each run waits here for older ones, and goes ahead before this job's time limit in any case.
+  queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Wait for older world builds to finish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 330); do  # up to ~5.5 hours, then go ahead anyway
+            older=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow world.yml --limit 20 --json databaseId,status \
+                    --jq "[.[] | select(.databaseId < $GITHUB_RUN_ID and .status != \"completed\")] | length" || echo 0)
+            [ "$older" = "0" ] && exit 0
+            [ "$i" = 1 ] && echo "waiting for $older older world build(s) to finish"
+            sleep 60
+          done
+          echo "::notice::older world builds still busy; going ahead"
+
   shard:
+    needs: queue
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
