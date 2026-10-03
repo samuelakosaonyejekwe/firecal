@@ -56,6 +56,17 @@ jobs:
           if ! gh release view firecal-data --repo "$GITHUB_REPOSITORY" > /dev/null 2> key.err && ! grep -qi "not found" key.err; then
             echo "::error::GitHub rejected the FIRECAL_PUBLISH_TOKEN secret (expired or revoked?): $(cat key.err)"; exit 1
           fi
+          # when the key expires (GitHub reports it on every call): logged on every run, a warning a month ahead
+          exp=$(gh api -i "repos/$GITHUB_REPOSITORY" 2>/dev/null | tr -d '\r' | sed -n 's/^[Gg]ithub-[Aa]uthentication-[Tt]oken-[Ee]xpiration: //p')
+          if [ -z "$exp" ]; then
+            echo "publishing key: no expiry date"
+          else
+            days=$(( ($(date -d "$exp" +%s) - $(date +%s)) / 86400 ))
+            echo "publishing key expires $exp ($days days left)"
+            if [ "$days" -lt 30 ]; then
+              echo "::warning::The FIRECAL_PUBLISH_TOKEN key expires on $exp ($days days left): renew it on GitHub (Settings > Developer settings > Fine-grained tokens) and update the repository secret"
+            fi
+          fi
       - name: Keep the watcher running (every 10 minutes for ~5.5 hours)
         if: steps.key.outcome == 'success'
         continue-on-error: true
