@@ -147,9 +147,9 @@ function initMap() {
   map.on("moveend", () => { clearTimeout(refreshLayer.t); refreshLayer.t = setTimeout(refreshLayer, 250); });
 
   // What a map point shows: the country, and the fire square's value explained in plain words.
-  // Mouse: on hover, and a click opens the country. Touch screens (phones, tablets) have no hover, so a
-  // tap shows the same card, pinned, with an Analyze button (and ✕); dragging the map or tapping
-  // elsewhere closes it.
+  // Mouse: on hover, and a click opens the country (inside the country already shown, the area around the
+  // fire square). Touch screens (phones, tablets) have no hover, so a tap shows the same card, pinned, with
+  // Analyze buttons (and ✕); dragging the map or tapping elsewhere closes it.
   let lastPointer = "mouse";
   const canvas = map.getCanvas();
   canvas.addEventListener("pointerdown", (ev) => { lastPointer = ev.pointerType || "mouse"; }, { passive: true });
@@ -185,7 +185,7 @@ function initMap() {
     if (drawing || tipPinned || touchTap()) return;
     const info = pointInfo(e.point);
     map.setFilter("countries-hover", ["==", ["get", "id"], info?.ctry?.id || ""]);
-    canvas.style.cursor = info?.ctry ? "pointer" : "";
+    canvas.style.cursor = info && (info.spot || !isShown(info.ctry)) ? "pointer" : "";
     if (!info) { hideTip(); return; }
     showTip(e.originalEvent, info.html + `<br><span class="muted">${clickHint(info)}</span>`);
   });
@@ -203,8 +203,9 @@ function initMap() {
     }
     if (!info) return;
     hideTip();
-    if (info.spot && (e.originalEvent.shiftKey || !info.ctry)) selectAOI(areaAround(info.spot));
-    else if (info.ctry) selectAOI({ country: info.ctry.id });
+    // a click inside the country already shown analyzes the area around the square, so it always does something
+    if (info.spot && (e.originalEvent.shiftKey || !info.ctry || isShown(info.ctry))) selectAOI(areaAround(info.spot));
+    else if (info.ctry && !isShown(info.ctry)) selectAOI({ country: info.ctry.id });
   });
   map.on("movestart", (e) => { if (e.originalEvent) hideTip(); }); // the user dragged or zoomed the map
 
@@ -354,7 +355,10 @@ function areaAround({ lat: y, lon: x }) {
   const s = Math.max(-90, y - AREA_HALF), n = Math.min(90, y + AREA_HALF);
   return { bbox: [r2(w), r2(s), r2(e), r2(n)] };
 }
+const isShown = (ctry) => !!ctry && state.aoi?.country === ctry.id; // that country's results are on screen now
 function clickHint(info) { // mouse: what a click opens
+  if (isShown(info.ctry)) return info.spot ? `Click to analyze this area (≈ 55 km) · ${esc(info.ctry.name)} is shown now`
+    : `${esc(info.ctry.name)} is shown now · click a coloured square to analyze just that area`;
   if (info.ctry && info.spot) return `Click to analyze ${esc(info.ctry.name)} · Shift-click: just this area`;
   if (info.ctry) return `Click to analyze ${esc(info.ctry.name)}`;
   return "Click to analyze this area";
@@ -370,8 +374,10 @@ function showTip(ev, html) {
 function pinTip(ev, html, ctry, spot) { // touch: the card stays, with buttons
   const t = $("tip");
   tipPinned = true; t.classList.add("pinned");
-  const buttons = (ctry ? `<button type="button" class="tip-go">Analyze ${esc(ctry.name)}</button>` : "") +
-    (spot ? `<button type="button" class="tip-area${ctry ? " ghost" : ""}">Analyze this area <span class="muted">(≈ 55 km)</span></button>` : "");
+  const offer = ctry && !isShown(ctry); // no button that would only re-open the country already on screen
+  const buttons = (offer ? `<button type="button" class="tip-go">Analyze ${esc(ctry.name)}</button>` : "") +
+    (spot ? `<button type="button" class="tip-area${offer ? " ghost" : ""}">Analyze this area <span class="muted">(≈ 55 km)</span></button>` : "");
+  if (isShown(ctry)) html += `<br><span class="muted">${esc(ctry.name)} is shown now${spot ? "" : " · tap a coloured square to analyze just that area"}</span>`;
   showTip(ev, `<button type="button" class="tip-x ghost" aria-label="Close">✕</button>${html}` +
     (buttons ? `<div class="tip-actions">${buttons}</div>` : ""));
   t.querySelector(".tip-x").onclick = hideTip;

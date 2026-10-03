@@ -212,6 +212,7 @@ td.num, th.num { text-align: right; }
 .tip .tip-actions { margin-top: 10px; }
 .tip .tip-go, .tip .tip-area { width: 100%; min-height: 44px; }
 .tip .tip-actions { display: grid; gap: 8px; }
+.tip .tip-area:not(.ghost) .muted { color: inherit; font-weight: 500; } /* on the orange button the size note stays readable */
 .maplibregl-ctrl-attrib { font-size: 10px; }
 
 /* ── header search / actions ── */
