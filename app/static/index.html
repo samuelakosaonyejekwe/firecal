@@ -67,14 +67,14 @@
             <button id="locate" class="ghost" type="button" title="Use my location">◎ Me</button>
           </div>
         </div>
-        <div id="map" role="application" aria-label="World map. Click a country, or use Draw area and drag a rectangle."></div>
+        <div id="map" role="application" aria-label="World map. Click a country to analyze it, Shift-click a fire square for just that area, or use Draw area and drag a rectangle."></div>
         <div class="map-foot">
           <div class="map-filters" id="histFilters">
             <label class="field">Year <select id="mapYear"></select></label>
             <label class="field">Month <select id="mapMonth"></select></label>
           </div>
           <div class="legend" id="mapLegend"></div>
-          <p class="hint">Tap or click any country to see what its colours mean and analyze it, search above, or draw a box anywhere, including across borders. <span id="readyCount"></span></p>
+          <p class="hint">Tap or click any country to see what its colours mean and analyze it, or analyze just the area around one fire square (Shift-click on a computer, or the button on a phone). You can also search above, or draw a box anywhere, including across borders. <span id="readyCount"></span></p>
           <details class="coords">
             <summary>Enter coordinates</summary>
             <form id="coordForm" class="coord-grid">
@@ -265,7 +265,7 @@
     <h2 id="helpTitle">Welcome to FireCal</h2>
     <p>Satellites have watched fires since 2000, but the older <b>MODIS</b> sensors and the newer, sharper <b>VIIRS</b> sensor count them differently. FireCal <b>harmonizes</b> both into one consistent 24-year burning calendar for any place on Earth.</p>
     <ol>
-      <li><b>Pick an area.</b> Search a country, tap or click it on the map (a tap on a phone first explains the colours there), tap <b>◎ Me</b>, or <b>Draw area</b> for a custom box (up to 20° × 20° on the website).</li>
+      <li><b>Pick an area.</b> Search a country, tap or click it on the map (a tap on a phone first explains the colours there, with buttons for the country or just that area; on a computer, Shift-click a fire square for just that area), tap <b>◎ Me</b>, or <b>Draw area</b> for a custom box (up to 20° × 20° on the website).</li>
       <li><b>Check this week.</b> The <b>Early warning</b> card compares the last 6 complete days of live NASA detections with the same dates in every past year.</li>
       <li><b>Read the calendar.</b> Every month since 2000 appears as one square: darker means more burning. Switch to <b>Anomaly</b> to spot unusual months, and tap a row to open that year day by day.</li>
       <li><b>Plan.</b> <b>Critical periods</b> show when the season opens, peaks and closes. <b>What this means</b> summarizes it for responders, land managers or scientists.</li>

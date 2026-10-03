@@ -210,7 +210,8 @@ td.num, th.num { text-align: right; }
               border-radius: 14px; box-shadow: var(--shadow-lg); }
 .tip .tip-x { float: right; margin: -6px -8px 4px 8px; min-height: 32px; width: 32px; padding: 0; border-radius: 999px; }
 .tip .tip-actions { margin-top: 10px; }
-.tip .tip-go { width: 100%; min-height: 40px; }
+.tip .tip-go, .tip .tip-area { width: 100%; min-height: 44px; }
+.tip .tip-actions { display: grid; gap: 8px; }
 .maplibregl-ctrl-attrib { font-size: 10px; }
 
 /* ── header search / actions ── */

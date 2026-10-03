@@ -113,6 +113,7 @@ function initMap() {
                layers: [{ id: "base", type: "raster", source: "base" }] },
       center: [15, 12], zoom: 1.2, minZoom: 0.5, maxZoom: 11, attributionControl: { compact: true },
       renderWorldCopies: false, dragRotate: false, pitchWithRotate: false, touchPitch: false, cooperativeGestures: false,
+      boxZoom: false, // Shift-click belongs to "analyze just this area"; Draw area is FireCal's own box tool
     });
   } catch (err) {
     mapUnavailable(); return;
@@ -176,7 +177,8 @@ function initMap() {
       }
       html += `<br><span class="muted">${lat(p.lat)}, ${lon(p.lon)}</span>`;
     }
-    return { html, ctry: ctry && { id: ctry.properties.id, name: ctry.properties.name } };
+    return { html, ctry: ctry && { id: ctry.properties.id, name: ctry.properties.name },
+             spot: cell && { lat: +cell.properties.lat, lon: +cell.properties.lon } };
   }
 
   map.on("mousemove", (e) => {
@@ -185,7 +187,7 @@ function initMap() {
     map.setFilter("countries-hover", ["==", ["get", "id"], info?.ctry?.id || ""]);
     canvas.style.cursor = info?.ctry ? "pointer" : "";
     if (!info) { hideTip(); return; }
-    showTip(e.originalEvent, info.html + (info.ctry ? `<br><span class="muted">Click to analyze</span>` : ""));
+    showTip(e.originalEvent, info.html + `<br><span class="muted">${clickHint(info)}</span>`);
   });
   canvas.addEventListener("mouseleave", () => { if (!tipPinned) { hideTip(); map.setFilter("countries-hover", ["==", ["get", "id"], ""]); } });
 
@@ -196,10 +198,13 @@ function initMap() {
       if (!info) { hideTip(); return; }
       map.setFilter("countries-hover", ["==", ["get", "id"], info.ctry?.id || ""]);
       const r = canvas.getBoundingClientRect();
-      pinTip({ clientX: r.left + e.point.x, clientY: r.top + e.point.y }, info.html, info.ctry);
+      pinTip({ clientX: r.left + e.point.x, clientY: r.top + e.point.y }, info.html, info.ctry, info.spot);
       return;
     }
-    if (info?.ctry) { hideTip(); selectAOI({ country: info.ctry.id }); }
+    if (!info) return;
+    hideTip();
+    if (info.spot && (e.originalEvent.shiftKey || !info.ctry)) selectAOI(areaAround(info.spot));
+    else if (info.ctry) selectAOI({ country: info.ctry.id });
   });
   map.on("movestart", (e) => { if (e.originalEvent) hideTip(); }); // the user dragged or zoomed the map
 
@@ -236,8 +241,8 @@ function setDrawing(on) {
   $("draw").classList.toggle("active", on);
   $("draw").textContent = on ? "Drag on the map…" : "Draw area";
   if (!map) return;
-  if (on) { map.dragPan.disable(); map.boxZoom.disable(); toast("Drag a rectangle on the map (Esc to cancel)"); }
-  else { map.dragPan.enable(); map.boxZoom.enable(); }
+  if (on) { map.dragPan.disable(); toast("Drag a rectangle on the map (Esc to cancel)"); }
+  else { map.dragPan.enable(); }
 }
 
 function drawAOI() {
@@ -340,21 +345,40 @@ function refreshBasemap() {
   refreshLayer();
 }
 
+// "Just this area": a box about 55 km across centred on the clicked fire square (single ~11 km squares are too
+// small for seasonal statistics), kept inside the map's latitude and longitude limits.
+const AREA_HALF = 0.25;
+function areaAround({ lat: y, lon: x }) {
+  const r2 = (v) => Math.round(v * 100) / 100;
+  const w = Math.max(-180, x - AREA_HALF), e = Math.min(180, x + AREA_HALF);
+  const s = Math.max(-90, y - AREA_HALF), n = Math.min(90, y + AREA_HALF);
+  return { bbox: [r2(w), r2(s), r2(e), r2(n)] };
+}
+function clickHint(info) { // mouse: what a click opens
+  if (info.ctry && info.spot) return `Click to analyze ${esc(info.ctry.name)} · Shift-click: just this area`;
+  if (info.ctry) return `Click to analyze ${esc(info.ctry.name)}`;
+  return "Click to analyze this area";
+}
 let tipPinned = false;
 function showTip(ev, html) {
   const t = $("tip"); t.innerHTML = html; t.style.display = "block";
+  t.style.left = "0px"; t.style.top = "0px"; // measure at its natural width first (near an edge it would be squeezed)
   const x = Math.max(8, Math.min(ev.clientX + 14, innerWidth - t.offsetWidth - 8));
   const y = Math.max(8, Math.min(ev.clientY + 14, innerHeight - t.offsetHeight - 8));
   t.style.left = x + "px"; t.style.top = y + "px";
 }
-function pinTip(ev, html, ctry) { // touch: the card stays, with buttons
+function pinTip(ev, html, ctry, spot) { // touch: the card stays, with buttons
   const t = $("tip");
   tipPinned = true; t.classList.add("pinned");
+  const buttons = (ctry ? `<button type="button" class="tip-go">Analyze ${esc(ctry.name)}</button>` : "") +
+    (spot ? `<button type="button" class="tip-area${ctry ? " ghost" : ""}">Analyze this area <span class="muted">(≈ 55 km)</span></button>` : "");
   showTip(ev, `<button type="button" class="tip-x ghost" aria-label="Close">✕</button>${html}` +
-    (ctry ? `<div class="tip-actions"><button type="button" class="tip-go">Analyze ${esc(ctry.name)}</button></div>` : ""));
+    (buttons ? `<div class="tip-actions">${buttons}</div>` : ""));
   t.querySelector(".tip-x").onclick = hideTip;
   const go = t.querySelector(".tip-go");
   if (go) go.onclick = () => { hideTip(); selectAOI({ country: ctry.id }); };
+  const area = t.querySelector(".tip-area");
+  if (area) area.onclick = () => { hideTip(); selectAOI(areaAround(spot)); };
 }
 function hideTip() {
   const t = $("tip"); t.style.display = "none"; t.classList.remove("pinned"); tipPinned = false;
