@@ -5,7 +5,7 @@
  */
 (function () {
   "use strict";
-  const STATIC = !!window.FIRECAL_STATIC;
+  const STATIC = document.querySelector('meta[name="firecal-edition"]')?.content === "static"; // set by pipeline/static_site.py
   const CELL = 10;
 
   class HttpError extends Error {
@@ -358,6 +358,32 @@
     jobs: async () => ({}),
     onLiveUpdate(f) { liveListeners.push(f); }, // called with the new live meta when NASA's own data replaces the published copy
   };
+
+  // ───────────────────────── place names (both editions) ─────────────────────────
+  // The map card names each square after the nearest notable town (GeoNames towns of 1 000+ people), e.g.
+  // "18 km NE of Ogbomosho", region "Oyo". pipeline/places.py stores, for each 2° tile, every town that can be
+  // the answer somewhere inside it, so one small download names any square. Bigger towns count as a little
+  // closer (the same rule as places.py), so a city 15 km away is preferred to a hamlet 9 km away.
+  const placeIndex = () => once("places", async () => { const ix = await fetchJSON("places/index.json"); ix.have = new Set(ix.tiles); return ix; });
+  const placeTile = (k) => once(`places:${k}`, () => fetchJSON(`places/${k}.json`));
+  const DIRS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"], KM = 111.2;
+  const pull = (pop) => 1 + 0.25 * Math.log10(Math.max(pop, 1000) / 1000);
+  async function place(lat, lon) {
+    const ix = await placeIndex(), D = ix.deg;
+    const key = `${Math.min(Math.floor((lat + 90) / D), 180 / D - 1)}_${Math.min(Math.floor((lon + 180) / D), 360 / D - 1)}`;
+    if (!ix.have.has(key)) return null; // open ocean or ice: no town within reach
+    const t = await placeTile(key), kx = KM * Math.cos(lat * Math.PI / 180);
+    let best = null;
+    for (const [name, la, lo, ai, ci, pop] of t.p) {
+      const dy = (lat - la / 1000) * KM, dx = (lon - lo / 1000) * kx, d = Math.hypot(dx, dy), score = d / pull(pop);
+      if (!best || score < best.score) best = { score, d, dx, dy, name, region: t.a[ai], cc: t.c[ci] };
+    }
+    if (!best) return null;
+    const dir = DIRS[Math.round(((Math.atan2(best.dx, best.dy) * 180 / Math.PI + 360) % 360) / 45) % 8];
+    return { label: best.d < 3 ? best.name : `${Math.round(best.d)} km ${dir} of ${best.name}`, town: best.name,
+             region: best.region, country: ix.countries[best.cc] || best.cc };
+  }
+  Static.place = Server.place = place;
 
   Static.fetchedUrls = Server.fetchedUrls = () => [...fetched];
   window.FireData = STATIC ? Static : Server;

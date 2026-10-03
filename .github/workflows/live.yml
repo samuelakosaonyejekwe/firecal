@@ -26,25 +26,33 @@ jobs:
   watch:
     runs-on: ubuntu-latest
     timeout-minutes: 345
-    env:
-      GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
+    env:   # the publishing token is given only to the steps that use it (not to pip install)
       FIRECAL_SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
     steps:
       - name: Check the publishing key
+        env:
+          GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "::error::The FIRECAL_PUBLISH_TOKEN secret is missing; the watcher can't start website builds."
             exit 1
           fi
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.txt
       - run: pip install -r requirements.txt
       - name: Watch NASA and rebuild the website when it has newer fires
-        run: python pipeline/keeper.py --watch "${{ inputs.minutes || '320' }}"
+        env:
+          GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
+          MINUTES: ${{ inputs.minutes || '320' }}
+        run: python pipeline/keeper.py --watch "$MINUTES"
       - name: Hand over to the next watcher
         if: ${{ !cancelled() }}   # a watcher you cancel by hand is not replaced
+        env:
+          GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
         run: gh workflow run live.yml

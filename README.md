@@ -135,7 +135,7 @@ NASA FIRMS 7-day NRT feed ──► app/nrt.py (server) / pipeline/live.py (webs
 pipeline/world.py + pipeline/sync.py ──► GitHub release "firecal-data" ──► .github/workflows/pages.yml
                       ──► tests ──► pipeline/static_site.py + pipeline/live.py ──► GitHub Pages
 pipeline/keeper.py (cloud watcher and local server: rebuild the website when it falls behind NASA; restart the watcher)
-pipeline/boundaries.py (Natural Earth → app/resources), pipeline/prior.py (→ app/resources/prior.json)
+pipeline/boundaries.py (Natural Earth → app/resources), pipeline/places.py (GeoNames → app/resources/places), pipeline/prior.py (→ app/resources/prior.json)
 ```
 
 API: `/api/calendar?country=Kenya` or `?bbox=w,s,e,n`, `/api/nowcast`, `/api/grid`, `/api/live`,
@@ -143,7 +143,7 @@ API: `/api/calendar?country=Kenya` or `?bbox=w,s,e,n`, `/api/nowcast`, `/api/gri
 
 ## Data and limits
 
-- NASA FIRMS: MODIS Collection 6.1 (MCD14ML), VIIRS S-NPP 375 m (VNP14IMG), VIIRS S-NPP NRT. Boundaries: Natural Earth.
+- NASA FIRMS: MODIS Collection 6.1 (MCD14ML), VIIRS S-NPP 375 m (VNP14IMG), VIIRS S-NPP NRT. Boundaries: Natural Earth. Place names on the map card: GeoNames towns of 1 000+ people (CC BY 4.0).
 - The yearly archive currently ends 31 Dec 2024 (FIRMS publishes each year's archive later). The live panel covers the last 6 complete days; the gap from Jan 2025 to last week is not filled (it could be, with a free FIRMS MAP_KEY and the FIRMS area API, but that is not implemented).
 - Near-real-time detections are provisional. Static-source masking uses each country's archive, so it applies once the country is loaded.
 - Boxes must not cross the 180° meridian. Both editions decide which countries a box touches from the same border file (`app/resources/shapes.geojson`, Natural Earth 1:50m snapped to 0.0001°); `tests/test_geo_parity.py` checks the browser and server agree.

@@ -53,7 +53,7 @@ def build_app(out: pathlib.Path, version: str):
     shutil.copytree(STATIC, out / "static", dirs_exist_ok=True)
     html = (STATIC / "index.html").read_text(encoding="utf-8").replace("{{v}}", version)
     html = html.replace('"/static/', '"static/').replace('"/manifest.webmanifest"', '"manifest.webmanifest"')
-    html = html.replace("<head>", '<head>\n  <script>window.FIRECAL_STATIC = true;</script>', 1)
+    html = html.replace("<head>", '<head>\n  <meta name="firecal-edition" content="static">', 1)  # no inline script (CSP)
     (out / "index.html").write_text(html, encoding="utf-8")
     (out / "sw.js").write_text((STATIC / "sw.js").read_text(encoding="utf-8").replace("{{v}}", version), encoding="utf-8")
     man = json.loads((STATIC / "manifest.webmanifest").read_text())
@@ -63,6 +63,7 @@ def build_app(out: pathlib.Path, version: str):
     write_json(out / "manifest.webmanifest", man)
     shutil.copy(RES / "world.geojson", out / "world.geojson")    # map outlines (1:110m)
     shutil.copy(RES / "shapes.geojson", out / "shapes.geojson")  # the server's borders, for boxes and "◎ Me"
+    shutil.copytree(RES / "places", out / "places", dirs_exist_ok=True)  # town names for the map card (GeoNames)
     (out / ".nojekyll").write_text("")  # serve files as-is (no Jekyll processing)
 
 

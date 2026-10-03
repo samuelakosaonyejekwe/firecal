@@ -210,6 +210,8 @@ td.num, th.num { text-align: right; }
               border-radius: 14px; box-shadow: var(--shadow-lg); }
 .tip .tip-x { float: right; margin: -6px -8px 4px 8px; min-height: 32px; width: 32px; padding: 0; border-radius: 999px; }
 .tip .tip-actions { margin-top: 10px; }
+.tip .tip-place { font-weight: 600; }
+.tip .tip-place.loading { color: var(--muted); font-weight: 400; }
 .tip .tip-go, .tip .tip-area { width: 100%; min-height: 44px; }
 .tip .tip-actions { display: grid; gap: 8px; }
 .tip .tip-area:not(.ghost) .muted { color: inherit; font-weight: 500; } /* on the orange button the size note stays readable */

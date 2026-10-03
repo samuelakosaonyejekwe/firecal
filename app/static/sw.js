@@ -228,7 +228,7 @@ self.addEventListener("fetch", (e) => {
     if (p.startsWith("/api/jobs") || p.startsWith("/api/prepare")) return;                                  // progress: always live
     if (p.startsWith("/api/") || p.startsWith("/data/live/") || p.startsWith("/data/meta.json"))
       answer(e, networkFirst(req, DATA));                                                                   // fresh, offline fallback
-    else if (p.startsWith("/data/")) answer(e, staleWhileRevalidate(req, DATA, e));                        // precomputed history
+    else if (p.startsWith("/data/") || p.startsWith("/places/")) answer(e, staleWhileRevalidate(req, DATA, e)); // history, place names
     else if (p.startsWith("/static/")) answer(e, appFile(req));                                           // versioned URLs
     else answer(e, networkFirst(req, SHELL));
   } else if (url.hostname === "cdnjs.cloudflare.com") {

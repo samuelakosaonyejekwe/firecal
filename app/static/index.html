@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <!-- only FireCal itself and the few services it names may supply code, data or images; no inline scripts -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com; worker-src 'self' blob:; child-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://server.arcgisonline.com; connect-src 'self' https://server.arcgisonline.com https://firms2.modaps.eosdis.nasa.gov https://cdnjs.cloudflare.com https://fonts.googleapis.com https://fonts.gstatic.com; manifest-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self'">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>FireCal</title>
   <meta name="description" content="Harmonized MODIS + VIIRS burning activity calendar for anywhere on Earth">
@@ -22,9 +25,9 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap">
   <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
   <link rel="preconnect" href="https://server.arcgisonline.com" crossorigin>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css" integrity="sha512-qN/uDg9bS3IAldWq4lswyC+9ZSoShtfyNDp+FaJhdtXJqdgubHA+s4nB8BajW0m90Y0+RBGbqu2anzbxiQYdHA==" crossorigin="anonymous">
   <link rel="stylesheet" href="/static/styles.css?v={{v}}">
-  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js" integrity="sha512-dXgoFR02YHJ9Fa29P3D/1umNaZ0EXS2N0w29Lm3b/1BK8UDLMdLWDFwuujIyJJdU27/PLuk3dmS1V9NO8ABX1A==" crossorigin="anonymous"></script>
   <script defer src="/static/vendor/echarts.min.js?v={{v}}"></script>
   <script defer src="/static/engine.js?v={{v}}"></script>
   <script defer src="/static/geo.js?v={{v}}"></script>
@@ -99,7 +102,7 @@
             <li><b>Validate.</b> Leave-one-year-out cross-validation predicts each VIIRS year from MODIS alone.</li>
             <li><b>Live.</b> The last 6 complete days of VIIRS S-NPP near-real-time detections are compared with the same dates in every past year (static industrial sources masked).</li>
           </ol>
-          <p class="hint">Data: NASA FIRMS — MODIS C6.1, VIIRS S-NPP 375 m (archive + NRT). Boundaries: Natural Earth.</p>
+          <p class="hint">Data: NASA FIRMS — MODIS C6.1, VIIRS S-NPP 375 m (archive + NRT). Boundaries: Natural Earth. Place names: GeoNames (CC BY 4.0).</p>
         </details>
       </section>
     </aside>

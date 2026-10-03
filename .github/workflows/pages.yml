@@ -29,7 +29,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
 
       - name: Fingerprint data, code and NASA feed
         id: fp
@@ -46,13 +48,13 @@ jobs:
 
       - name: Already published this exact state?
         id: done
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
         with:
           path: .published
           key: ${{ steps.fp.outputs.published }}
           lookup-only: true
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         if: steps.done.outputs.cache-hit != 'true'
         with:
           python-version: "3.12"
@@ -66,7 +68,7 @@ jobs:
       - name: Restore built site
         id: site
         if: steps.done.outputs.cache-hit != 'true'
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
         with:
           path: |
             site
@@ -98,7 +100,7 @@ jobs:
 
       - name: Save built site
         if: steps.done.outputs.cache-hit != 'true' && steps.site.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
         with:
           path: |
             site
@@ -110,10 +112,10 @@ jobs:
         # if NASA can't be reached, keep the live fires already published and deploy everything else
         run: python pipeline/live.py --site site --build build --force --keep-from "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
 
-      - uses: actions/configure-pages@v6
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d  # v6
         if: steps.done.outputs.cache-hit != 'true'
 
-      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
         if: steps.done.outputs.cache-hit != 'true'
         with:
           path: site
@@ -121,13 +123,13 @@ jobs:
       - name: Deploy
         id: deploy
         if: steps.done.outputs.cache-hit != 'true'
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5
 
       - name: Remember this state
         if: steps.done.outputs.cache-hit != 'true'
         run: mkdir -p .published && date -u > .published/at
 
-      - uses: actions/cache/save@v6
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
         if: steps.done.outputs.cache-hit != 'true'
         with:
           path: .published

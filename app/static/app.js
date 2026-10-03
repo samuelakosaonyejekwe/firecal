@@ -100,7 +100,7 @@ function selectAOI(a, { fly = true } = {}) {
 
 // ───────────────────────── map ─────────────────────────
 let map = null, drawing = false, dragStart = null;
-const ATTRIB = "Basemap © Esri · Boundaries © Natural Earth · Fire data: NASA FIRMS";
+const ATTRIB = "Basemap © Esri · Boundaries © Natural Earth · Places © GeoNames (CC BY 4.0) · Fire data: NASA FIRMS";
 const tiles = () => [`https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_${isDark() ? "Dark" : "Light"}_Gray_Base/MapServer/tile/{z}/{y}/{x}`];
 const rectFeature = ([w, s, e, n]) => ({ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] } });
 const empty = { type: "FeatureCollection", features: [] };
@@ -156,12 +156,15 @@ function initMap() {
   canvas.addEventListener("touchstart", () => { lastPointer = "touch"; }, { passive: true }); // older iOS without pointer events
   const touchTap = () => lastPointer === "touch" || lastPointer === "pen" || matchMedia("(hover: none)").matches;
 
-  function pointInfo(point) {
+  function pointInfo(point, lngLat) {
     const fs = map.queryRenderedFeatures(point, { layers: ["live", "cells", "countries-fill"].filter((l) => map.getLayer(l)) });
     const cell = fs.find((f) => f.layer.id === "live" || f.layer.id === "cells");
     const ctry = fs.find((f) => f.layer.id === "countries-fill");
     if (!ctry && !cell) return null;
     let html = ctry ? `<b>${esc(ctry.properties.name)}</b>${state.byId[ctry.properties.id]?.ready ? "" : ' <span class="muted">· history loads on first open</span>'}` : "";
+    // where this is: filled in by fillPlace() once the nearest town is known (the square's centre, else the pointer)
+    const at = cell ? { lat: +cell.properties.lat, lon: +cell.properties.lon } : { lat: Math.round(lngLat.lat * 10) / 10, lon: Math.round(lngLat.lng * 10) / 10 };
+    html += `${html ? "<br>" : ""}<span class="tip-place loading" data-at="${at.lat},${at.lon}" data-ctry="${esc(ctry?.properties.name || "")}">…</span>`;
     if (cell) {
       const p = cell.properties;
       const word = scaleWord(p.v);
@@ -177,17 +180,18 @@ function initMap() {
       }
       html += `<br><span class="muted">${lat(p.lat)}, ${lon(p.lon)}</span>`;
     }
-    return { html, ctry: ctry && { id: ctry.properties.id, name: ctry.properties.name },
+    return { html, at, ctry: ctry && { id: ctry.properties.id, name: ctry.properties.name },
              spot: cell && { lat: +cell.properties.lat, lon: +cell.properties.lon } };
   }
 
   map.on("mousemove", (e) => {
     if (drawing || tipPinned || touchTap()) return;
-    const info = pointInfo(e.point);
+    const info = pointInfo(e.point, e.lngLat);
     map.setFilter("countries-hover", ["==", ["get", "id"], info?.ctry?.id || ""]);
     canvas.style.cursor = info && (info.spot || !isShown(info.ctry)) ? "pointer" : "";
     if (!info) { hideTip(); return; }
     showTip(e.originalEvent, info.html + `<br><span class="muted">${clickHint(info)}</span>`);
+    fillPlace();
     clearTimeout(hovered);
     if (info.ctry && !isShown(info.ctry)) hovered = setTimeout(() => FireData.prefetch({ country: info.ctry.id }), 150);
   });
@@ -195,12 +199,13 @@ function initMap() {
 
   map.on("click", (e) => {
     if (drawing) return;
-    const info = pointInfo(e.point);
+    const info = pointInfo(e.point, e.lngLat);
     if (touchTap()) { // phones and tablets: explain first, analyze on request
       if (!info) { hideTip(); return; }
       map.setFilter("countries-hover", ["==", ["get", "id"], info.ctry?.id || ""]);
       const r = canvas.getBoundingClientRect();
       pinTip({ clientX: r.left + e.point.x, clientY: r.top + e.point.y }, info.html, info.ctry, info.spot);
+      fillPlace();
       if (info.ctry && !isShown(info.ctry)) FireData.prefetch({ country: info.ctry.id });
       return;
     }
@@ -366,13 +371,36 @@ function clickHint(info) { // mouse: what a click opens
   if (info.ctry) return `Click to analyze ${esc(info.ctry.name)}`;
   return "Click to analyze this area";
 }
-let tipPinned = false;
+let tipPinned = false, tipAt = null;
 function showTip(ev, html) {
   const t = $("tip"); t.innerHTML = html; t.style.display = "block";
+  tipAt = { clientX: ev.clientX, clientY: ev.clientY };
+  placeTip();
+}
+function placeTip() { // keep the card on screen (also after it grows)
+  const t = $("tip"), ev = tipAt;
+  if (!ev || t.style.display === "none") return;
   t.style.left = "0px"; t.style.top = "0px"; // measure at its natural width first (near an edge it would be squeezed)
   const x = Math.max(8, Math.min(ev.clientX + 14, innerWidth - t.offsetWidth - 8));
   const y = Math.max(8, Math.min(ev.clientY + 14, innerHeight - t.offsetHeight - 8));
   t.style.left = x + "px"; t.style.top = y + "px";
+}
+// the card's "where": "18 km NE of Ogbomosho · Oyo" (the country too when it differs from the one under the pointer)
+function fillPlace() {
+  const el = $("tip").querySelector(".tip-place");
+  if (!el) return;
+  const [la, lo] = el.dataset.at.split(",").map(Number);
+  const done = (html) => {
+    if (!el.isConnected) return; // the card has moved on to another square
+    if (html) { el.innerHTML = html; el.classList.remove("loading"); }
+    else { if (el.previousElementSibling?.tagName === "BR") el.previousElementSibling.remove(); el.remove(); } // no town known
+    placeTip();
+  };
+  FireData.place(la, lo).then((pl) => {
+    if (!pl) return done("");
+    const where = [pl.region, pl.country !== el.dataset.ctry ? pl.country : ""].filter(Boolean).map(esc).join(", ");
+    done(`${esc(pl.label)}${where ? ` <span class="muted">· ${where}</span>` : ""}`);
+  }, () => done(""));
 }
 function pinTip(ev, html, ctry, spot) { // touch: the card stays, with buttons
   const t = $("tip");
@@ -524,6 +552,14 @@ function showResults() {
   $("aoiSub").textContent = state.aoi.country
     ? `Country · ${fmt(d.total_cell_days)} fire cell-days recorded since Nov 2000`
     : `Custom area across ${cs.join(", ")} · ${fmt(d.total_cell_days)} fire cell-days since Nov 2000`;
+  if (state.aoi.bbox) { // name the area after the town nearest its centre
+    const a = state.aoi, [w, s, e, n] = a.bbox;
+    FireData.place((s + n) / 2, (w + e) / 2).then((pl) => {
+      if (!pl || state.aoi !== a) return;
+      const where = [`near ${pl.town}`, pl.region].filter(Boolean).join(", ");
+      $("aoiSub").textContent = `Custom area ${where} · ${cs.join(", ")} · ${fmt(d.total_cell_days)} fire cell-days since Nov 2000`;
+    }, () => {});
+  }
   const sel = $("season");
   sel.innerHTML = d.seasons.map((s, i) => `<option value="${i}">${s.label}</option>`).join("");
   state.season = d.seasons.length - 1; sel.value = state.season;

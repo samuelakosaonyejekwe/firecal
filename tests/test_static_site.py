@@ -43,7 +43,7 @@ def decode(blob):
 
 def test_site_files(built):
     store, out, build = built
-    assert "window.FIRECAL_STATIC = true" in (out / "index.html").read_text()
+    assert '<meta name="firecal-edition" content="static">' in (out / "index.html").read_text()
     assert '"/static/' not in (out / "index.html").read_text()  # relative paths for /firecal/
     assert 'src="static/live.js' in (out / "index.html").read_text() and (out / "static" / "live.js").exists()
     meta = json.loads((out / "data" / "meta.json").read_text())

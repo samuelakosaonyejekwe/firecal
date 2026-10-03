@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -53,6 +54,32 @@ def _warm_map():
 
 app = FastAPI(title="FireCal — harmonized MODIS/VIIRS burning calendar", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+# Only requests addressed to this computer by name. This blocks DNS rebinding: a web page that points its own
+# domain at 127.0.0.1 to read or drive this server. A public deployment lists its own names (see Dockerfile).
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get("FIRECAL_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if h.strip()]
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "X-Frame-Options": "DENY",  # no other site may show FireCal inside a frame (clickjacking)
+    "Content-Security-Policy": "frame-ancestors 'none'",  # the page's own policy is in index.html
+    "Permissions-Policy": "geolocation=(self), camera=(), microphone=(), payment=(), usb=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+}
+
+
+@app.middleware("http")
+async def security(request: Request, call_next):
+    # anything that changes state (POST /api/prepare starts downloads) only from FireCal's own pages
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("origin")
+        if origin and origin.split("://", 1)[-1] != request.headers.get("host"):
+            return JSONResponse({"detail": "cross-site request refused"}, status_code=403)
+    response = await call_next(request)
+    for k, v in SECURITY_HEADERS.items():
+        response.headers.setdefault(k, v)
+    return response
 
 # cache-busting version for static assets: changes whenever a file changes
 VERSION = hashlib.sha1(b"".join(p.read_bytes() for p in sorted(STATIC.rglob("*")) if p.is_file())).hexdigest()[:10]
@@ -189,6 +216,15 @@ def index():
 def world():
     return FileResponse(RES / "world.geojson", media_type="application/geo+json",
                         headers={"Cache-Control": "public, max-age=604800"})
+
+
+@app.get("/places/{name}.json")
+def places(name: str):
+    """Place names for the map card, in 2° tiles (pipeline/places.py)."""
+    f = RES / "places" / f"{name}.json"
+    if not (name == "index" or all(p.isdigit() for p in name.split("_"))) or not f.is_file():
+        raise HTTPException(404, "no such place tile")
+    return FileResponse(f, media_type="application/json", headers={"Cache-Control": "public, max-age=604800"})
 
 
 @app.get("/sw.js")

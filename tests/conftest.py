@@ -7,6 +7,7 @@ _DATA = pathlib.Path(tempfile.mkdtemp(prefix="firecal-test-"))
 os.environ["FIRECAL_DATA"] = str(_DATA)      # app.main / pipeline read this at import
 os.environ["FIRECAL_NO_LIVE"] = "1"          # no NASA downloads from the server's lifespan
 os.environ["FIRECAL_NO_GITHUB"] = "1"        # no publishing from tests
+os.environ.setdefault("FIRECAL_ALLOWED_HOSTS", "testserver")  # FastAPI's test client's host name
 
 
 def pytest_configure(config):
