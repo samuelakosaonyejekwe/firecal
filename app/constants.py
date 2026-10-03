@@ -16,9 +16,10 @@ MODIS_START = pd.Timestamp("2000-11-01")  # first month of the Terra MODIS fire 
 AQUA_START = pd.Timestamp("2002-07-04")   # first Aqua MODIS fire product day
 VIIRS_START = pd.Timestamp("2012-01-20")  # first day of the S-NPP VIIRS 375 m archive
 # Terra's overpass has drifted earlier since it stopped orbit corrections (it left the morning constellation in
-# Oct 2022), so its detection rate falls. Worldwide, VIIRS/Terra fire cell-days were 6.73 ± 0.25 a year in
-# 2012–2019 and 6.74–6.88 in 2020–2021, then 7.62 in 2022 (+3.6 σ), 7.34 in 2023 and 7.91 in 2024, while Terra's
-# share of MODIS fell from ~0.39 to 0.37: from 2022 on the drifted years stay out of the Terra-only calibration.
+# Oct 2022), so its detection rate falls. Worldwide, VIIRS/Terra fire cell-days were 6.71 ± 0.24 a year in
+# 2012–2019 and 6.74–6.88 in 2020–2021, then 7.33 in 2022 (+2.6 σ), 7.34 in 2023 and 7.90 in 2024, while Terra's
+# share of MODIS fell from ~0.39 to 0.37 and 0.34 (sensor outage days left out, pipeline/prior.py): from 2022 on
+# the drifted years stay out of the Terra-only calibration.
 TERRA_DRIFT = pd.Timestamp("2022-01-01")
 
 # harmonization shrinkage (pseudo-counts, in MODIS cell-days)
@@ -55,7 +56,12 @@ def load_prior() -> tuple[float, float]:
     return float(p["k_world"]), float(p["k_terra_world"])
 
 
-def load_viirs_gaps() -> pd.DatetimeIndex:
-    """Days when S-NPP VIIRS recorded (almost) nothing worldwide while MODIS saw fires as usual: instrument
-    outages, not quiet days. Detected once over every country by pipeline/prior.py and versioned with the prior."""
-    return pd.DatetimeIndex(json.loads(PRIOR_FILE.read_text()).get("viirs_gaps", []))
+def load_outages() -> dict:
+    """Days a satellite recorded far less than usual worldwide: instrument or data outages, not quiet days.
+    Detected once over every country by pipeline/prior.py and versioned with the prior:
+    viirs: VIIRS out worldwide; viirs_strips: {day: bands} VIIRS out over bands of longitude strip_deg wide
+    (band = floor(lon / strip_deg)); modis: MODIS, or its Terra part, out; aqua: its Aqua part out."""
+    p = json.loads(PRIOR_FILE.read_text())
+    return {"viirs": pd.DatetimeIndex(p.get("viirs_gaps", [])), "strip_deg": p.get("strip_deg", 10),
+            "viirs_strips": {pd.Timestamp(d): b for d, b in p.get("viirs_strips", {}).items()},
+            "modis": pd.DatetimeIndex(p.get("modis_gaps", [])), "aqua": pd.DatetimeIndex(p.get("aqua_gaps", []))}

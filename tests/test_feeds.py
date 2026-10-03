@@ -46,3 +46,9 @@ def test_a_lagging_servers_older_file_is_never_preferred(monkeypatch):
     # we have the new 2000-byte data (10:00); the mirror still shows the old 1000-byte file (09:00)
     servers(monkeypatch, (T + dt.timedelta(hours=1), 2000), (T, 1000))
     assert feeds.newest(known=(2000, T + dt.timedelta(hours=1)))[2] == 2000  # no flip back to the older file
+
+
+def test_an_older_file_never_rolls_the_caller_back(monkeypatch):
+    # the caller has the 22:30 data (size 2000); the main server is down and the mirror still serves 22:00's (1000)
+    servers(monkeypatch, None, (T, 1000))
+    assert feeds.newest(known=(2000, T + dt.timedelta(minutes=30)))[1:] == (T + dt.timedelta(minutes=30), 2000)

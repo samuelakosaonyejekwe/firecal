@@ -15,7 +15,9 @@ Resumable: run it again and it carries on where it stopped.
     .venv/bin/python pipeline/world.py --no-github   # local only
     .venv/bin/python pipeline/world.py --update      # also rebuild countries when NASA publishes a new year
     .venv/bin/python pipeline/world.py --skip-published  # don't download countries GitHub already has (cloud)
+    .venv/bin/python pipeline/world.py --minutes 240 # stop starting new countries after 240 minutes
     .venv/bin/python pipeline/world.py --missing     # list countries not yet published (nothing is changed)
+    .venv/bin/python pipeline/world.py --missing --update   # ... or built before NASA's latest yearly archive
 
 If NASA can't be reached for several countries in a row (internet down), it stops early with exit
 code 3 instead of failing every remaining country; run it again later to continue.
@@ -23,13 +25,14 @@ code 3 instead of failing every remaining country; run it again later to continu
 import json
 import pathlib
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from pipeline.fetch import latest_archive_year  # noqa: E402
 from pipeline.fetch import DATA  # noqa: E402
 from pipeline.finalize import update_prior  # noqa: E402
-from pipeline.sync import PERMANENT, GitHubStore, archive_through, open_store, rebuild, sync_country  # noqa: E402
+from pipeline.sync import PERMANENT, RELEASE, GitHubStore, archive_through, gh, open_store, rebuild, sync_country  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PUBLISH_EVERY = 10         # rebuild the website after this many newly published countries
@@ -50,11 +53,12 @@ def main():
     if any(a in ("-h", "--help") for a in args):
         print(__doc__)
         return
-    if args == ["--missing"]:
-        gone = missing()
-        print(f"{len(gone)} countries not yet published" + (f": {' '.join(gone)}" if gone else ""))
+    if args and args[0] == "--missing":  # --missing [--update]: what a retry would still do
+        gone = missing(update="--update" in args)
+        what = "not yet published or behind NASA's latest yearly archive" if "--update" in args else "not yet published"
+        print(f"{len(gone)} countries {what}" + (f": {' '.join(gone)}" if gone else ""))
         return
-    unknown = [a for a in args if a.startswith("-") and a not in ("--no-github", "--shard", "--update", "--skip-published")]
+    unknown = [a for a in args if a.startswith("-") and a not in ("--no-github", "--shard", "--update", "--skip-published", "--minutes")]
     if unknown:
         sys.exit(f"unknown option {unknown[0]}; see --help")
     shard, use_github, update, skip = None, True, "--update" in args, "--skip-published" in args
@@ -64,6 +68,10 @@ def main():
     if "--no-github" in args:
         args.remove("--no-github")
         use_github = False
+    deadline = None
+    if "--minutes" in args:  # a time budget: no new country is started after it (a cloud worker's limit is fixed)
+        at = args.index("--minutes")
+        deadline, args = time.time() + float(args[at + 1]) * 60, args[:at] + args[at + 2:]
     if "--shard" in args:  # e.g. --shard 3/8 (parallel workers), anywhere on the command line
         at = args.index("--shard")
         i, n = map(int, args[at + 1].split("/"))
@@ -101,6 +109,9 @@ def main():
         local_list.write_text(json.dumps(unavailable, indent=1, sort_keys=True))
     for i, cid in enumerate(ids, 1):
         t = time.time()
+        if deadline and t > deadline:
+            print(f"time budget used: {len(ids) - i + 1} countries left for the next attempt", flush=True)
+            break
         if cid in unavailable and not update:  # NASA has no usable archive; recorded on an earlier run
             print(f"[{i}/{len(ids)}] {cid}: skipped, {unavailable[cid]}", flush=True)
             continue
@@ -137,12 +148,22 @@ def main():
         sys.exit(3)
 
 
-def missing() -> list[str]:
-    """Countries neither published nor known to be unavailable from NASA (what a retry would still build)."""
+def missing(update: bool = False) -> list[str]:
+    """Countries neither published nor known to be unavailable from NASA (what a retry would still build); with
+    `update`, also published countries built before NASA's latest yearly archive (what a retry would still rebuild)."""
     store = GitHubStore()
     gone = store.unavailable()
     ids = [c["id"] for c in json.loads((ROOT / "app" / "resources" / "countries.json").read_text(encoding="utf-8"))]
-    return [c for c in ids if c not in gone and not store.has(c)]
+    out = [c for c in ids if c not in gone and not store.has(c)]
+    if update:
+        latest = latest_archive_year()
+        with tempfile.TemporaryDirectory() as tmp:
+            gh("release", "download", RELEASE, "--dir", tmp, "--pattern", "*.built.json")
+            for f in sorted(pathlib.Path(tmp).glob("*.built.json")):
+                cid = f.name.removesuffix(".built.json")
+                if cid in ids and cid not in out and (json.loads(f.read_text()).get("archive_through") or 0) < latest:
+                    out.append(cid)
+    return out
 
 
 if __name__ == "__main__":

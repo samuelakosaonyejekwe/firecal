@@ -28,6 +28,10 @@ const squareWords = (d = 0.1) => {
   return { km, cell, square: `this ≈ ${km} km square`, spot: cell ? "this ≈ 11 km square" : `an average ≈ 11 km spot in this ≈ ${km} km square` };
 };
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const days = (n) => `${fmt(n)} day${fmt(n) === "1" ? "" : "s"}`;
+// a week's rank among past years: "lowest" / "highest" at the ends rather than "0th" / "100th" percentile
+const rankWords = (n) => n.percentile <= 0 ? `below every one of ${n.n_years} past years` : n.record ? `above every one of ${n.n_years} past years`
+  : `${ordinal(n.percentile)} percentile for these dates`;
 const ordinal = (n) => { n = Math.round(n); const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
 const kfmt = (v) => (Math.abs(v) >= 1e6 ? `${v / 1e6}M` : Math.abs(v) >= 1000 ? `${v / 1000}k` : v);
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch (_) { return null; } },
@@ -171,7 +175,7 @@ function initMap() {
     let html = ctry ? `<b>${esc(ctry.properties.name)}</b>${state.byId[ctry.properties.id]?.ready ? "" : ' <span class="muted">· history loads on first open</span>'}` : "";
     // where this is: filled in by fillPlace() once the nearest town is known (the square's centre, else the pointer)
     const at = cell ? { lat: +cell.properties.lat, lon: +cell.properties.lon } : { lat: Math.round(lngLat.lat * 10) / 10, lon: Math.round(lngLat.lng * 10) / 10 };
-    html += `${html ? "<br>" : ""}<span class="tip-place loading" data-at="${at.lat},${at.lon}" data-ctry="${esc(ctry?.properties.name || "")}">…</span>`;
+    html += `${html ? "<br>" : ""}<span class="tip-place pending" data-at="${at.lat},${at.lon}" data-ctry="${esc(ctry?.properties.name || "")}">…</span>`;
     if (cell) {
       const p = cell.properties;
       const word = scaleWord(p.v), sq = squareWords(+p.d);
@@ -290,6 +294,9 @@ async function refreshLayer() {
   map.setLayoutProperty("live", "visibility", live ? "visible" : "none");
   $("histFilters").hidden = live;
   const vb = viewBbox().map(Number), zoom = map.getZoom();
+  refreshLayer.ctl?.abort(); // a layer the map no longer needs stops loading (the local server works per request)
+  const ctl = (refreshLayer.ctl = new AbortController());
+  $("mapLegend").classList.add("updating"); $("mapLegend").setAttribute("aria-busy", "true");
   try {
     if (live) {
       const g = await FireData.live(vb, zoom);
@@ -310,7 +317,7 @@ async function refreshLayer() {
         `<b>Brighter = more fire.</b> Each dot is a ≈ ${squareWords(d).km} km square, colored by how many times satellites detected fire there in the last 7 days (provisional data).`);
     } else {
       const y = $("mapYear").value, m = +$("mapMonth").value;
-      const g = await FireData.grid(vb, y !== "all" ? +y : null, m || null, zoom);
+      const g = await FireData.grid(vb, y !== "all" ? +y : null, m || null, zoom, ctl.signal);
       if (token !== refreshLayer.token) return;
       const d = g.cell;
       map.getSource("cells").setData({ type: "FeatureCollection", features: g.cells.map(([xi, yi, v]) => ({
@@ -330,7 +337,12 @@ async function refreshLayer() {
         : `<span>No history loaded in this view yet. Click a country to load it, or switch to <b>Live</b> for this week's fires worldwide.</span>`;
     }
   } catch (e) {
-    if (token === refreshLayer.token) $("mapLegend").textContent = live ? "Live feed is warming up. Try again in a minute." : `Map layer unavailable: ${e.message}`;
+    if (token === refreshLayer.token && e.name !== "AbortError")
+      $("mapLegend").textContent = !navigator.onLine ? "You're offline: this layer hasn't been saved on this device."
+        : live ? (FireData.mode === "server" && e.status === 503 ? "Live feed is warming up. Try again in a minute." : `Live fires unavailable right now: ${e.message}`)
+        : `Map layer unavailable: ${e.message}`;
+  } finally {
+    if (token === refreshLayer.token) { $("mapLegend").classList.remove("updating"); $("mapLegend").removeAttribute("aria-busy"); }
   }
 }
 
@@ -399,7 +411,7 @@ function fillPlace() {
   const [la, lo] = el.dataset.at.split(",").map(Number);
   const done = (html) => {
     if (!el.isConnected) return; // the card has moved on to another square
-    if (html) { el.innerHTML = html; el.classList.remove("loading"); }
+    if (html) { el.innerHTML = html; el.classList.remove("pending"); }
     else { if (el.previousElementSibling?.tagName === "BR") el.previousElementSibling.remove(); el.remove(); } // no town known
     placeTip();
   };
@@ -675,6 +687,7 @@ function renderAll() {
 
 function base() {
   return {
+    aria: { enabled: true }, // a generated text description of each chart for screen readers
     animationDuration: 300,
     textStyle: { fontFamily: 'Inter, system-ui, -apple-system, "Segoe UI", sans-serif', color: css("--ink-2"), fontSize: 12 },
     tooltip: {
@@ -691,12 +704,16 @@ function chart(id) {
   if (!charts[id]) charts[id] = echarts.init($(id), null, { renderer: "canvas" });
   return charts[id];
 }
+const narrow = (id) => ($(id)?.clientWidth || 800) < 500;
 
 function sourceOf(iso) {
   const h = state.data.harmonization, p = h.periods;
+  if (h.no_record?.includes(iso)) return "no satellite record: the area's usual fire for the date at that month's level";
+  if (h.terra_only?.includes(iso)) return "MODIS Terra only × k (Aqua outage)";
   if (iso < p[1].from) return "MODIS Terra only × k";
   if (iso < p[2].from) return "MODIS Terra+Aqua × k";
   if (h.viirs_gaps?.includes(iso)) return "MODIS Terra+Aqua × k (VIIRS outage)";
+  if (h.viirs_strips?.includes(iso)) return "VIIRS S-NPP + MODIS × k where it lost an orbit";
   return "VIIRS S-NPP";
 }
 function sensorTag(year) {
@@ -740,7 +757,8 @@ function renderNowcast() {
   $("nowFigs").innerHTML = n.history
     ? `<div><span>This week</span><b>${fmt(n.total)}</b><em>fire cell-days</em></div>
        <div><span>Typical for these dates</span><b>${fmt(n.p50)}</b><em>normal range ${fmt(n.p10)}–${fmt(n.p90)}</em></div>
-       <div><span>Rank</span><b>${ordinal(n.percentile).replace(/(\d+)(\D+)/, "$1<small>$2</small>")}</b><em>percentile of ${n.n_years} years</em></div>`
+       <div><span>Rank</span>${n.percentile <= 0 ? `<b>Lowest</b><em>of ${n.n_years} years</em>` : n.record ? `<b>Highest</b><em>of ${n.n_years} years</em>`
+        : `<b>${ordinal(n.percentile).replace(/(\d+)(\D+)/, "$1<small>$2</small>")}</b><em>percentile of ${n.n_years} years</em>`}</div>`
     : `<div><span>This week</span><b>${fmt(n.total)}</b><em>fire cell-days</em></div>
        <div class="wide"><span>History loading</span><em>The comparison with past years appears once this area's archive is ready.</em></div>`;
   const max = Math.max(1, ...n.cells);
@@ -774,7 +792,8 @@ function renderKPIs() {
   const tiles = [
     { label: "Typical fire season", value: c ? `${c.start} – ${c.end}` : "–", note: c ? `${c.length} days · peak around ${c.peak}` : "Too little fire activity to define" },
     { label: `Latest full season (${last?.label ?? "–"})`, value: last && mean > 0 ? `${signed(((last.total - mean) / mean) * 100, 0)}%` : "–",
-      note: `vs long-term mean · ${fmt(last?.total)} cell-days`, status: statusOf(last?.z) },
+      // the status reads the anomaly in σ (how unusual for this area), shown next to the % so the two agree
+      note: `vs long-term mean (${last?.z != null ? `${signed(last.z)} σ` : "–"}) · ${fmt(last?.total)} cell-days`, status: statusOf(last?.z) },
     { label: "Most unusual month", value: top ? `${MONTHS[top.month - 1]} ${top.year}` : "None", note: top ? `${signed(top.z)} σ from normal (${top.z > 0 ? "more" : "less"} burning)` : "No month beyond ±2σ" },
     { label: "Harmonization skill", value: h.cv_median_ape != null ? `±${h.cv_median_ape}%` : "–",
       note: `median out-of-sample error · 1 MODIS ≈ ${fmt(h.k_all, 2)} VIIRS cell-days`,
@@ -826,15 +845,15 @@ function renderBriefing() {
   const B = {
     responders: [
       state.nowLoading ? li(`<b>Right now:</b> <span class="muted">checking this week's live fires…</span>`) :
-      st ? li(`<b>Right now:</b> ${fmt(n.total)} fire cell-day${n.total === 1 ? "" : "s"} this week, <b>${esc(st.label.toLowerCase())}</b> (${ordinal(n.percentile)} percentile for these dates).`) : "",
+      st ? li(`<b>Right now:</b> ${fmt(n.total)} fire cell-day${n.total === 1 ? "" : "s"} this week, <b>${esc(st.label.toLowerCase())}</b> (${rankWords(n)}).`) : "",
       li(`<b>Outlook from ${monthName}:</b> ${olText}`),
       c ? li(`<b>Critical period:</b> ${c.start} → ${c.end}, peaking around <b>${c.peak}</b>. Highest-risk weeks: ${d.top_weeks.map(esc).join(", ")}.`) : none ? "" : li("No regular fire season: burning here is sporadic."),
       none ? li("<b>No fires recorded</b> here by MODIS or VIIRS since November 2000.")
         : busiest.length ? li(`<b>Busiest months:</b> ${busiest.join(", ")} (${fmt(busyShare)}% of a normal year's burning).`) : "",
     ],
     managers: [
-      c ? li(`<b>Plan around the season:</b> ${c.length} days long on average (${c.start} – ${c.end}); ${lfit ? `it has been getting <b>${lfit.slope > 0 ? "longer" : "shorter"}</b> by ~${fmt(Math.abs(lfit.slope * 10))} days per decade${lc}.` : ""}`) : "",
-      sfit ? li(`<b>Season onset</b> is shifting <b>${sfit.slope < 0 ? "earlier" : "later"}</b> by ~${fmt(Math.abs(sfit.slope * 10))} days per decade${lc}.`) : "",
+      c ? li(`<b>Plan around the season:</b> ${c.length} days long on average (${c.start} – ${c.end}); ${lfit ? `it has been getting <b>${lfit.slope > 0 ? "longer" : "shorter"}</b> by ~${days(Math.abs(lfit.slope * 10))} per decade${lc}.` : ""}`) : "",
+      sfit ? li(`<b>Season onset</b> is shifting <b>${sfit.slope < 0 ? "earlier" : "later"}</b> by ~${days(Math.abs(sfit.slope * 10))} per decade${lc}.`) : "",
       none ? li("<b>No fires recorded</b> here by MODIS or VIIRS since November 2000, so there is no fire season to plan around.")
         : li(`<b>Quietest months</b> (windows for fuel management and prescribed burning, subject to local rules): ${quiet.join(", ")}.`),
       trend != null ? li(`<b>Long-term trend:</b> annual burning is ${Math.abs(trend) < 5 ? "roughly stable" : trend > 0 ? `<b>rising ~${fmt(trend)}%</b>` : `<b>falling ~${fmt(-trend)}%</b>`} per decade (harmonized 2001–${d.range.last_full})${lc}.`) : "",
@@ -873,7 +892,7 @@ function renderCalendar() {
     visualMap: { show: false, min: zMode ? -3 : 0, max: vmax, dimension: 2, inRange: { color: colors } },
     tooltip: { ...base().tooltip, formatter: (p) => {
       const [mo, yi] = p.data, y = years[yi];
-      return `<b>${MONTHS[mo]} ${y}</b><br>${fmt(m.values[yi][mo])} fire cell-days<br>Normal ${fmt(m.normal[mo])} · ${signed(m.z[yi][mo])} σ<br>` +
+      return `<b>${MONTHS[mo]} ${y}</b><br>${fmt(m.values[yi][mo])} fire cell-days<br>Normal ${fmt(m.normal[mo])}${m.z[yi][mo] != null ? ` · ${signed(m.z[yi][mo])} σ` : ""}<br>` +
              `<span style="color:${muted}">Source: ${sourceOf(`${y}-${String(mo + 1).padStart(2, "0")}-15`)}</span>`; } },
     series: [{ type: "heatmap", data, itemStyle: { borderColor: css("--surface"), borderWidth: 2, borderRadius: 3 },
                emphasis: { itemStyle: { borderColor: css("--ink"), borderWidth: 1.5 } } }],
@@ -952,7 +971,9 @@ function renderProfile() {
       formatter: (ps) => { const i = ps[0].dataIndex;
         return `<b>${label(keys[i])}</b><br>Season ${s.label}: <b>${fmt(sel[i], 1)}</b><br>Median: ${fmt(p50[i], 1)}<br>Normal range: ${fmt(p10[i], 1)}–${fmt(p90[i], 1)}`; } },
     xAxis: { type: "category", data: keys, boundaryGap: false, ...axisCommon(), splitLine: { show: false },
-             axisLabel: { color: css("--muted"), fontSize: 11, interval: (i, k) => k.endsWith("-01"), formatter: (k) => MONTHS[+k.slice(0, 2) - 1] } },
+             // phones: every other month, so the labels don't run together
+             axisLabel: { color: css("--muted"), fontSize: 11, interval: (i, k) => k.endsWith("-01") && (!narrow("chProfile") || +k.slice(0, 2) % 2 === 1),
+                          formatter: (k) => MONTHS[+k.slice(0, 2) - 1] } },
     yAxis: { type: "value", ...axisCommon(), axisLine: { show: false }, name: "cell-days / day", nameTextStyle: { color: css("--muted"), align: "left" } },
     series: [
       { name: "p10", type: "line", data: p10, stack: "band", symbol: "none", lineStyle: { opacity: 0 }, silent: true },
@@ -987,11 +1008,12 @@ function renderDaily() {
   chart("chDaily").setOption({
     ...base(),
     visualMap: { show: false, min: 0, max: vmax, dimension: 1, inRange: { color: ramp() } },
-    calendar: { range: String(y), top: 24, left: 30, right: 6, cellSize: [cell, cell],
+    calendar: { range: String(y), top: 24, left: cell >= 9 ? 30 : 8, right: 6, cellSize: [cell, cell],
       itemStyle: { borderColor: css("--surface"), borderWidth: cell > 9 ? 2 : 1, color: css("--surface-2") },
       splitLine: { show: false }, yearLabel: { show: false },
-      dayLabel: { firstDay: 1, nameMap: ["S", "M", "T", "W", "T", "F", "S"], color: muted, fontSize: 10 },
-      monthLabel: { color: css("--ink-2"), fontSize: cell > 9 ? 11 : 9 } },
+      // small cells (phones): no weekday letters, and every other month's name, so labels don't collide
+      dayLabel: { show: cell >= 9, firstDay: 1, nameMap: ["S", "M", "T", "W", "T", "F", "S"], color: muted, fontSize: 10 },
+      monthLabel: { color: css("--ink-2"), fontSize: cell > 9 ? 11 : 9, ...(cell < 12 ? { formatter: (p) => (+p.M % 2 ? MONTHS[+p.M - 1] : "") } : {}) } },
     tooltip: { ...base().tooltip, formatter: (p) => {
       const [iso, h, i] = p.data;
       return `<b>${niceDate(iso)}</b><br>Harmonized: <b>${fmt(h, 1)}</b> fire cell-days<br>` +
@@ -1008,7 +1030,7 @@ function renderTiming() {
   chart("chTiming").setOption({
     ...base(),
     grid: { left: 64, right: 12, top: 8, bottom: 26 },
-    xAxis: { type: "value", min: 0, max: 365, interval: 30.4, ...axisCommon(),
+    xAxis: { type: "value", min: 0, max: 365, interval: narrow("chTiming") ? 60.8 : 30.4, ...axisCommon(), // phones: every other month
              axisLabel: { color: css("--muted"), fontSize: 11, formatter: (v) => MONTHS[(s0 - 1 + Math.round(v / 30.4)) % 12] } },
     yAxis: { type: "category", data: ss.map((s) => s.label), inverse: true, ...axisCommon(), splitLine: { show: false } },
     tooltip: { ...base().tooltip, trigger: "axis", axisPointer: { type: "shadow", shadowStyle: { color: css("--grid"), opacity: 0.5 } },
@@ -1110,10 +1132,11 @@ function downloadCSV() {
   const rows = ["date,modis_cell_days,viirs_cell_days,harmonized_cell_days,frp_mw,source"];
   for (let i = 0; i < d.h.length; i++) {
     const iso = isoOf(addDays(d.start, i));
-    rows.push([iso, d.m[i], d.v[i] ?? "", d.h[i], d.frp[i] ?? "", sourceOf(iso)].join(",")); // frp_mw empty where not recorded
+    rows.push([iso, d.m[i], d.v[i] ?? "", d.h[i], d.frp[i] ?? "", `"${sourceOf(iso).replace(/"/g, '""')}"`].join(",")); // frp_mw empty where not recorded
   }
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" }));
+  // a byte-order mark, so spreadsheet programs (Excel) read "×" and "°" as UTF-8
+  a.href = URL.createObjectURL(new Blob(["\ufeff" + rows.join("\r\n")], { type: "text/csv;charset=utf-8" }));
   a.download = `firecal_${state.aoi.country || state.aoi.bbox.join("_")}.csv`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
@@ -1252,7 +1275,9 @@ async function openDialog(d) {
   }
   d.showModal();
 }
-function openHelp() { openDialog($("help")); }
+function openHelp() { // opens at its title (on phones, focus would otherwise scroll it to the button at the bottom)
+  openDialog($("help")).then(() => { $("help").scrollTop = 0; $("help").querySelector("h2, h1")?.focus({ preventScroll: true }); });
+}
 
 // ───────────────────────── wiring ─────────────────────────
 async function loadMeta() {
@@ -1283,6 +1308,7 @@ FireData.onLiveUpdate?.((live) => {
 });
 
 async function init() {
+  document.documentElement.dataset.edition = FireData.mode; // "static" (website) or "server": edition-specific text
   const t = store.get("firecal-theme");
   if (t) document.documentElement.dataset.theme = t;
   $("theme").setAttribute("aria-pressed", String(isDark()));
@@ -1310,10 +1336,10 @@ async function init() {
   state.aoi = fromHash || saved || (firstReady ? { country: firstReady.id } : { country: "Nigeria" });
 
   if (matchMedia("(max-width: 1100px)").matches) $("methodBox").open = false;
-  if (window.maplibregl) initMap(); else mapUnavailable();
   history.replaceState(null, "", `#${aoiQuery(state.aoi)}`);
   if (state.aoi.country) $("search").value = state.byId[state.aoi.country].name;
-  loadAOI();
+  loadAOI(); // its data is on the way before the map takes the main thread to build
+  if (window.maplibregl) initMap(); else mapUnavailable();
   if (hashProblem) toast(hashProblem, 7000);
   if (!store.get("firecal-seen-help")) { store.set("firecal-seen-help", "1"); openHelp(); }
 
@@ -1327,6 +1353,8 @@ async function init() {
   });
   $("search").addEventListener("change", () => { const c = byName($("search").value); if (c) { selectAOI({ country: c.id }); $("search").blur(); } });
   $("search").addEventListener("focus", () => $("search").select());
+  // Enter always searches (some browsers, e.g. Safari, don't submit a form that has no submit button)
+  $("search").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); $("searchForm").requestSubmit?.() ?? $("searchForm").onsubmit(e); } });
   $("searchForm").onsubmit = (e) => {
     e.preventDefault();
     if (!$("search").value.trim()) return;

@@ -46,13 +46,35 @@ import shapely
 from shapely.geometry import box, shape
 
 from .constants import (AQUA_START, CELL, LAMBDA, LAMBDA_AREA, MAX_CV_ERROR, MAX_MAP_CELLS, MIN_OVERLAP_CELL_DAYS,
-                        MIN_R2, MODIS_START, PRIOR_FILE, TERRA_DRIFT, VIIRS_START, load_prior, load_viirs_gaps)
+                        MIN_R2, MODIS_START, PRIOR_FILE, TERRA_DRIFT, VIIRS_START, load_outages, load_prior)
 
 # fingerprint of the analysis code: cached results are invalidated whenever the method changes
-# (the prior file too: its worldwide ratios and VIIRS outage days change every result)
+# (the prior file too: its worldwide ratios and sensor outage days change every result)
 CODE_VERSION = hashlib.sha1(b"".join(
     (pathlib.Path(__file__).parent / f).read_bytes() for f in ("analysis.py", "constants.py")) + PRIOR_FILE.read_bytes()).hexdigest()[:10]
-VIIRS_GAPS = load_viirs_gaps()
+# sensor outages found worldwide (pipeline/prior.py): each day is read from the sensor that recorded it
+OUTAGES = load_outages()
+VIIRS_GAPS = OUTAGES["viirs"]                    # VIIRS out worldwide: MODIS stands in
+STRIP = OUTAGES["strip_deg"] * CELL              # VIIRS out over a band of longitude this many cells wide
+MODIS_OUT = OUTAGES["modis"]                     # MODIS (or its Terra part) out
+AQUA_OUT = OUTAGES["aqua"].difference(MODIS_OUT)  # MODIS holds Terra alone: Terra × k_terra stands in
+
+
+def strip_sql() -> str:
+    """SQL condition: a grid row inside a VIIRS outage strip (a lost orbit: a band of longitude on one day)."""
+    parts = [f"(d = DATE '{d.date()}' AND floor(xi / {STRIP}) IN ({','.join(map(str, b))}))"
+             for d, b in sorted(OUTAGES["viirs_strips"].items())]
+    return "(" + " OR ".join(parts) + ")" if parts else "false"
+
+
+# a grid row's sensor, with the VIIRS outage strips set apart: MODIS there -> 4 (it stands in for VIIRS),
+# VIIRS there -> 3 (a partial record, dropped)
+SENSOR_SQL = f"CASE WHEN s < 2 AND {strip_sql()} THEN 4 - s ELSE s END"
+
+
+def unknown_days(idx: pd.DatetimeIndex) -> np.ndarray:
+    """Days without any usable record: MODIS out before VIIRS, or MODIS and VIIRS out together."""
+    return np.asarray(idx.isin(MODIS_OUT) & ((idx < VIIRS_START) | idx.isin(VIIRS_GAPS)))
 
 
 # ---- map layers (shared by the server and the website build, pipeline/static_site.py) ----
@@ -63,13 +85,23 @@ def layer_years(month, end) -> float:
     return ((end - MODIS_START).days + 1) / 365.2425
 
 
-def vequiv_sql(k, kt) -> str:
-    """One grid row's VIIRS-equivalent fire day: VIIRS itself, or calibrated MODIS before it and on its outage days."""
-    gaps = ",".join(f"DATE '{d.date()}'" for d in VIIRS_GAPS)
-    viirs = f"d >= DATE '{VIIRS_START.date()}'" + (f" AND d NOT IN ({gaps})" if gaps else "")
-    return f"""CASE WHEN {viirs} THEN (s = 1)::INT * 1.0
-                    WHEN d >= DATE '{AQUA_START.date()}' THEN (s = 0)::INT * {k}
-                    ELSE (s = 2)::INT * {kt} END"""
+def vequiv_sql(k, kt, scale: dict | None = None) -> str:
+    """One grid row's VIIRS-equivalent fire day: VIIRS itself, or calibrated MODIS before it and where it was out
+    (Terra alone when Aqua was out). Days without any record count as nothing; instead the recorded days of their
+    month are scaled up by the area's `scale` ({"YYYY-MM": factor}, Store.harmonize's no_record_scale)."""
+    day = lambda ix: ",".join(f"DATE '{d.date()}'" for d in ix)  # noqa: E731
+    idx = pd.date_range(MODIS_START, pd.Timestamp(pd.Timestamp.now().year + 1, 12, 31))
+    unknown = idx[unknown_days(idx)]
+    viirs = f"d >= DATE '{VIIRS_START.date()}' AND NOT {strip_sql()}" + (f" AND d NOT IN ({day(VIIRS_GAPS)})" if len(VIIRS_GAPS) else "")
+    aqua = f"d IN ({day(AQUA_OUT)})" if len(AQUA_OUT) else "false"
+    none = f"d IN ({day(unknown)})" if len(unknown) else "false"
+    months = " ".join(f"WHEN year(d) = {ym[:4]} AND month(d) = {int(ym[5:])} THEN {float(f)!r}" for ym, f in sorted((scale or {}).items()))
+    return f"""CASE WHEN {none} THEN 0.0
+                    WHEN {viirs} THEN (s = 1)::INT * 1.0
+                    WHEN d >= DATE '{AQUA_START.date()}' AND NOT {aqua} THEN (s = 0)::INT * {k}
+                    ELSE (s = 2)::INT * {kt} END * {f"CASE {months} ELSE 1.0 END" if months else "1.0"}"""
+
+
 GRID_WORKERS = 6       # countries computed in parallel for a map layer
 
 
@@ -271,15 +303,16 @@ class Store:
         return (math.floor(s * CELL), math.ceil(n * CELL) - 1, math.floor(w * CELL), math.ceil(e * CELL) - 1)
 
     def _src(self, files, bbox):
-        """SQL fragment yielding one row per (d, cell, sensor), merged across files."""
+        """SQL fragment yielding one row per (d, cell, sensor), merged across files (sensors as SENSOR_SQL)."""
         lst = "[" + ",".join(f"'{p.as_posix()}'" for p in files) + "]"
         where = ""
         if bbox:
             y0, y1, x0, x1 = self._cell_bounds(bbox)
             where = f"WHERE yi BETWEEN {y0} AND {y1} AND xi BETWEEN {x0} AND {x1}"
+        rows = f"(SELECT d, yi, xi, {SENSOR_SQL} AS s, n, frp FROM read_parquet({lst}) {where})"
         if len(files) == 1:
-            return f"(SELECT d, yi, xi, s, n, frp FROM read_parquet({lst}) {where})"
-        return f"(SELECT d, yi, xi, s, sum(n) AS n, sum(frp) AS frp FROM read_parquet({lst}) {where} GROUP BY d, yi, xi, s)"
+            return rows
+        return f"(SELECT d, yi, xi, s, sum(n) AS n, sum(frp) AS frp FROM {rows} GROUP BY d, yi, xi, s)"
 
     def _daily_merged_sql(self, files, bbox) -> str:
         """Daily totals over several countries' files, each cell-day counted once (as _src's merge does).
@@ -291,13 +324,13 @@ class Store:
         y0, y1, x0, x1 = self._cell_bounds(bbox)
         w = f"yi BETWEEN {y0} AND {y1} AND xi BETWEEN {x0} AND {x1}"
         return f"""
-            WITH shared AS (SELECT yi, xi FROM (SELECT DISTINCT yi, xi, filename FROM read_parquet({lst}, filename = true)
-                                                WHERE {w}) GROUP BY yi, xi HAVING count(*) > 1)
+            WITH src AS (SELECT d, yi, xi, {SENSOR_SQL} AS s, n, frp, filename FROM read_parquet({lst}, filename = true) WHERE {w}),
+            shared AS (SELECT yi, xi FROM (SELECT DISTINCT yi, xi, filename FROM src) GROUP BY yi, xi HAVING count(*) > 1)
             SELECT d, s, sum(cells)::DOUBLE AS cells, sum(det)::DOUBLE AS det, sum(frp)::DOUBLE AS frp FROM (
-              SELECT d, s, count(*) AS cells, sum(n) AS det, sum(frp) AS frp FROM read_parquet({lst}) WHERE {w} GROUP BY d, s
+              SELECT d, s, count(*) AS cells, sum(n) AS det, sum(frp) AS frp FROM src GROUP BY d, s
               UNION ALL
               SELECT d, s, count(DISTINCT (yi, xi)) - count(*) AS cells, 0 AS det, 0 AS frp
-              FROM read_parquet({lst}) SEMI JOIN shared USING (yi, xi) WHERE {w} GROUP BY d, s
+              FROM src SEMI JOIN shared USING (yi, xi) GROUP BY d, s
             ) GROUP BY d, s"""
 
     # ---------------------------------------------------------------- prior
@@ -318,6 +351,10 @@ class Store:
                 FROM {self._src(files, bbox)} GROUP BY d, s""")
         idx = pd.date_range(MODIS_START, self.end, freq="D")
         out = pd.DataFrame(index=idx)
+        # MODIS inside the VIIRS outage strips (sensor 4) stands in for VIIRS there; it is MODIS all the same
+        strip = df[df.s == 4].set_index("d")["cells"]
+        strip.index = pd.to_datetime(strip.index)
+        df = df[df.s != 3].assign(s=df.s.replace(4, 0)).groupby(["d", "s"], as_index=False).sum()
         for s, col in ((0, "m"), (1, "v"), (2, "t")):
             part = df[df.s == s].set_index("d")
             part.index = pd.to_datetime(part.index)
@@ -326,6 +363,7 @@ class Store:
             out[col + "_frp"] = part["frp"].reindex(idx).fillna(0.0)
         out.loc[idx < VIIRS_START, ["v", "v_det", "v_frp"]] = np.nan
         out.loc[idx.isin(VIIRS_GAPS), ["v", "v_det", "v_frp"]] = np.nan  # VIIRS outage days: no record, not "no fire"
+        out["mg"] = strip.reindex(idx).fillna(0.0)  # MODIS cells where VIIRS lost an orbit
         return out
 
     @staticmethod
@@ -359,30 +397,56 @@ class Store:
         apes = [c["ape"] for c in out if c["ape"] is not None]
         return out, (_r(np.median(apes), 1) if apes else None)
 
-    def harmonize(self, day: pd.DataFrame):
+    def harmonize(self, day: pd.DataFrame, checks: bool = True):
+        """Calibrate MODIS to VIIRS and build the harmonized series day.h. `checks=False` skips the
+        cross-validation (most of the time spent here) when only the ratios are needed (map layers)."""
         pm, pt = self.prior()
-        # VIIRS outage days (no reference record): MODIS stands in for them, scaled like the pre-VIIRS years,
-        # and they are left out of every comparison of the sensors (fits, R², cross-validation, scatter)
-        gap = np.asarray((day.index >= VIIRS_START) & day.v.isna())
+        # Sensor outages (pipeline/prior.py) are read from the sensor that recorded the day, and left out of every
+        # comparison of the sensors (fits, R², cross-validation, scatter, Terra check):
+        # VIIRS out (worldwide, or over part of the area: a lost orbit) -> calibrated MODIS stands in there;
+        # Aqua out -> Terra × k_terra; no usable record at all -> the area's usual fire for that date, at the level
+        # of the same month's recorded days.
+        idx = day.index
+        gap = np.asarray((idx >= VIIRS_START) & day.v.isna())
+        strip = np.asarray(idx >= VIIRS_START) & ~gap & (day.mg.to_numpy() > 0)
+        aqua = np.asarray(idx.isin(AQUA_OUT))
+        out = gap | strip | aqua | np.asarray(idx.isin(MODIS_OUT))
         fit = day[["m", "t", "v"]].copy()
-        fit.loc[gap, ["m", "t"]] = np.nan
+        fit.loc[out, ["m", "t", "v"]] = np.nan
         monthly = fit.resample("MS").sum(min_count=1)
         monthly["overlap"] = (monthly.index >= (VIIRS_START + pd.offsets.MonthBegin(0))) & monthly.v.notna()
         k_all, k = self._fit_k(monthly, "m", pm)
         kt_all, kt = self._fit_k(monthly, "t", pt)
-        mo = day.index.month - 1
-        day["h"] = np.select([day.index < AQUA_START, (day.index < VIIRS_START) | gap], [day.t * kt[mo], day.m * k[mo]], day.v)
+        mo = idx.month - 1
+        modis = np.where(aqua, day.t * kt[mo], day.m * k[mo])
+        h = np.select([idx < AQUA_START, (idx < VIIRS_START) | gap], [day.t * kt[mo], modis], day.v + day.mg * k[mo])
+        unknown = unknown_days(idx)
+        scale = {}
+        if unknown.any():
+            # no record: the area's usual fire on that calendar day (mean over the recorded years), scaled to the
+            # level of that month's recorded days (their sum over the usual sum on the same days)
+            known = pd.Series(np.where(unknown, np.nan, h), index=idx)
+            clim = known.groupby(idx.strftime("%m-%d").str.replace("02-29", "02-28")).transform("mean").fillna(0.0)
+            ym = [idx.year, idx.month]
+            r = known.groupby(ym).transform("sum") / clim.where(~unknown).groupby(ym).transform("sum")
+            h = np.where(unknown, clim * r.where(np.isfinite(r), 1.0), h)
+            # the factor that scales a month's recorded days up to its total (the map layers' fill: vequiv_sql)
+            tot = pd.Series(h, index=idx).groupby(ym).sum()
+            rec = known.groupby(ym).sum()
+            for (y, m) in sorted({(d.year, d.month) for d in idx[unknown]}):
+                scale[f"{y}-{m:02d}"] = round(float(tot[(y, m)] / rec[(y, m)]), 4) if rec[(y, m)] > 0 else 1.0
+        day["h"] = h
 
         ov = monthly[monthly.overlap].copy()
         ov["pred"] = ov.m * k[ov.index.month - 1]
         ss_res = float(((ov.v - ov.pred) ** 2).sum())
         ss_tot = float(((ov.v - ov.v.mean()) ** 2).sum())
         r2 = 1 - ss_res / ss_tot if ss_tot > 0 else None
-        cv, cv_ape = self._cv(monthly, "m", pm)
-        _, cv_ape_t = self._cv(monthly, "t", pt)
+        cv, cv_ape = self._cv(monthly, "m", pm) if checks else ([], None)
+        _, cv_ape_t = self._cv(monthly, "t", pt) if checks else ([], None)
 
         # VIIRS-independent check: in the Terra+Aqua years both MODIS estimates exist
-        yr = pd.DataFrame({"a": day.m * k[mo], "b": day.t * kt[mo]})
+        yr = pd.DataFrame({"a": fit.m * k[mo], "b": fit.t * kt[mo]})
         yr = yr[(yr.index >= "2003-01-01") & (yr.index < VIIRS_START)].resample("YS").sum()
         yr = yr[(yr.index.year < VIIRS_START.year) & (yr.a > 0)]
         terra_check = _r(float(np.median((yr.b - yr.a).abs() / yr.a * 100)), 1) if len(yr) else None
@@ -394,7 +458,13 @@ class Store:
             "r2_monthly": _r(r2, 3),
             "cv": cv, "cv_median_ape": cv_ape, "cv_median_ape_terra": cv_ape_t,
             "terra_check_ape": terra_check,
-            "viirs_gaps": [d.date().isoformat() for d in day.index[gap]],  # outage days filled from MODIS
+            # outage days, by how they were read: MODIS for VIIRS (all of it, or where an orbit was lost), Terra
+            # alone for MODIS, or estimated from the area's usual fire (no record)
+            "viirs_gaps": [d.date().isoformat() for d in idx[gap & ~unknown]],
+            "viirs_strips": [d.date().isoformat() for d in idx[strip]],
+            "terra_only": [d.date().isoformat() for d in idx[aqua & ((idx < VIIRS_START) | gap) & ~unknown]],
+            "no_record": [d.date().isoformat() for d in idx[unknown]],
+            "no_record_scale": scale,
             # "indicative only": few fires (small islands, deserts, humid forest), a poor monthly fit,
             # or a large out-of-sample error; see MAX_CV_ERROR
             "overlap_viirs_cell_days": _r(n_ov, 0),
@@ -487,9 +557,9 @@ class Store:
         dd["year"] = dd.index.year
         piv = dd.groupby(["year", "key"]).h7.mean().unstack()
         vals = piv.to_numpy()
-        clim = pd.DataFrame({"mean": np.nanmean(vals, 0), "p10": np.nanquantile(vals, 0.1, 0),
-                             "p50": np.nanquantile(vals, 0.5, 0), "p90": np.nanquantile(vals, 0.9, 0)},
-                            index=piv.columns)
+        q = np.nanquantile if np.isnan(vals).any() else np.quantile  # (the same answer; nanquantile loops per day)
+        clim = pd.DataFrame({"mean": np.nanmean(vals, 0), "p10": q(vals, 0.1, 0), "p50": q(vals, 0.5, 0),
+                             "p90": q(vals, 0.9, 0)}, index=piv.columns)
 
         # ---- fire seasons: start the season the month after the quietest month
         s0 = int((np.nanargmin(mu) + 1) % 12) + 1 if np.isfinite(mu).any() else 1
@@ -531,7 +601,8 @@ class Store:
         if len(timed) >= 3:
             med = {k: float(np.median([s[k] for s in timed])) for k in ("start_off", "peak_off", "end_off")}
             critical = {"start": off_label(med["start_off"]), "peak": off_label(med["peak_off"]),
-                        "end": off_label(med["end_off"]), "length": int(med["end_off"] - med["start_off"] + 1),
+                        "end": off_label(med["end_off"]),
+                        "length": int(round(med["end_off"])) - int(round(med["start_off"])) + 1,  # as the dates shown
                         **{k: _r(v, 0) for k, v in med.items()}}
         # four busiest weeks, at least 3 weeks apart: 7-day sums centred on each day of the mean year, wrapping
         # around New Year (31 Dec and 7 Jan are one week apart); ties go to the earlier date; weeks with fire only
@@ -584,10 +655,14 @@ class Store:
             return hit
         with self._lock:  # requests asking for the same layer at once share one computation
             lock = self._grid_locks.setdefault(key, threading.Lock())
-        with lock:
-            if (hit := self._grids.lookup(key)) is not _MISS:
-                return hit
-            return self._compute_grid(cid, year, month, key)
+        try:
+            with lock:
+                if (hit := self._grids.lookup(key)) is not _MISS:
+                    return hit
+                return self._compute_grid(cid, year, month, key)
+        finally:
+            with self._lock:  # (waiting requests hold the lock itself; later ones find the layer in memory)
+                self._grid_locks.pop(key, None)
 
     def _compute_grid(self, cid, year, month, key) -> pd.DataFrame:
         # disk cache survives restarts; invalidated when the grid is rebuilt or the prior changes
@@ -599,16 +674,12 @@ class Store:
             for old in disk.parent.parent.glob("*"):
                 if old.is_dir() and old.name != tag:  # (another thread may have just created this version's folder)
                     shutil.rmtree(old, ignore_errors=True)
-        k, kt = self._country_k(cid, disk.parent)
-        where = [f"d <= DATE '{self.end.date()}'"]  # the record shown everywhere ends here (a country rebuilt early waits)
-        if year:
-            where.append(f"year(d) = {int(year)}")
+        months = self._country_months(cid, disk.parent)
+        where = [f"y = {int(year)}"] if year else []
         if month:
-            where.append(f"month(d) = {int(month)}")
-        w = ("AND " + " AND ".join(where)) if where else ""
-        df = _df(f"""
-            SELECT xi, yi, sum({vequiv_sql(k, kt)}) AS val
-            FROM '{self.path(cid)}' WHERE true {w} GROUP BY xi, yi HAVING val > 0""")
+            where.append(f"m = {int(month)}")
+        df = _df(f"""SELECT xi, yi, sum(val) AS val FROM '{months}' WHERE {" AND ".join(where) or "true"}
+                     GROUP BY xi, yi HAVING val > 0""")
         if not year:  # mean per year over the years that hold this month (or the whole record)
             df["val"] /= layer_years(month, self.end)
         disk.parent.mkdir(parents=True, exist_ok=True)
@@ -617,20 +688,36 @@ class Store:
         tmp.replace(disk)
         return self._grids.put(key, df)
 
-    def _country_k(self, cid, folder: pathlib.Path) -> tuple[float, float]:
-        """The country's calibration ratios (all-years, Terra-only), kept on disk next to its map layers:
-        computing them takes ~0.4 s per country, which every new layer would otherwise repeat."""
+    def _country_months(self, cid, folder: pathlib.Path) -> pathlib.Path:
+        """The country's VIIRS-equivalent fire days per (year, month, cell), computed once per data version:
+        every map layer is then a sum over this table instead of a scan of the daily record (as the website build)."""
+        f = folder / "months.parquet"
+        if f.exists() and f.stat().st_mtime >= self.path(cid).stat().st_mtime:
+            return f
+        k, kt, scale = self._country_k(cid, folder)
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp = folder / f"months.{threading.get_ident()}.tmp"
+        with duckdb.connect() as con:  # the record shown everywhere ends at self.end (a country rebuilt early waits)
+            con.execute(f"""COPY (SELECT year(d)::SMALLINT AS y, month(d)::TINYINT AS m, xi, yi, sum({vequiv_sql(k, kt, scale)}) AS val
+                                  FROM '{self.path(cid)}' WHERE d <= DATE '{self.end.date()}' GROUP BY ALL HAVING val > 0)
+                            TO '{tmp.as_posix()}' (FORMAT parquet)""")
+        tmp.replace(f)
+        return f
+
+    def _country_k(self, cid, folder: pathlib.Path) -> tuple[float, float, dict]:
+        """The country's calibration ratios (all-years, Terra-only) and its fill of days without a record
+        (vequiv_sql), kept on disk next to its map layers: computing them repeats the country's analysis."""
         f = folder / "k.json"
         if f.exists() and f.stat().st_mtime >= self.path(cid).stat().st_mtime:
             k = json.loads(f.read_text())
-            return k["k"], k["kt"]
-        _, cal, *_ = self.series({"country": cid})
-        k, kt = cal["k_all"] or 1.0, cal["k_terra_all"] or 1.0
+            return k["k"], k["kt"], k["scale"]
+        cal = self.harmonize(self.daily([self.path(cid)], None), checks=False)
+        k, kt, scale = cal["k_all"] or 1.0, cal["k_terra_all"] or 1.0, cal["no_record_scale"]
         folder.mkdir(parents=True, exist_ok=True)
         tmp = f.with_suffix(f".{threading.get_ident()}.tmp")
-        tmp.write_text(json.dumps({"k": k, "kt": kt}))
+        tmp.write_text(json.dumps({"k": k, "kt": kt, "scale": scale}))
         tmp.replace(f)
-        return k, kt
+        return k, kt, scale
 
     def grid(self, bbox, year=None, month=None) -> dict:
         """Map layer: fire days per 0.1° cell inside the viewport, over processed countries."""
@@ -729,7 +816,7 @@ class Store:
             ids = self.countries_in(aoi["bbox"])
         static = self.static_cells([c for c in ids if c in self._ready])
         if static:
-            g = g[[(a, b) not in static for a, b in zip(g.yi, g.xi)]]
+            g = g[np.array([(a, b) not in static for a, b in zip(g.yi, g.xi)], dtype=bool)]  # (an empty list would pick columns)
         g = g[g.d.isin(days)]
         per_day = g.groupby("d").size().reindex(days, fill_value=0)
         now = int(per_day.sum())

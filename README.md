@@ -32,7 +32,7 @@ compares with every past year.
 | Address | https://samuelakosaonyejekwe.github.io/firecal/ | http://127.0.0.1:8765 |
 | Countries | every country published to the `firecal-data` release | any country on demand: downloaded from the release if published, otherwise built from NASA (and published, with a `gh` login that may write to the repository) |
 | Drawn boxes | analyzed in the browser from 0.1° fire tiles (up to 20° × 20°) | analyzed on the server (up to ~70° × 70°) |
-| Live fires | NASA serves the feed from two servers that update independently; `app/feeds.py` takes the newest data from either and dates it by content (a server re-stamping an unchanged file doesn't count as new). A cloud watcher (`.github/workflows/live.yml`) checks NASA every 5 min around the clock and rebuilds the site when NASA posts new data, handing over to its own successor every ~5.5 h, so neither a laptop nor GitHub's best-effort schedule is needed; a second self-renewing chain, the guardian (`.github/workflows/guard.yml`, plain shell), checks every 10 min that the watcher runs and restarts it, while the watcher restarts the guardian, so neither depends on GitHub's schedule (which drops most scheduled runs); the schedules, every website build and the local server (`pipeline/keeper.py`) are extra restarters. Independently of GitHub, each visitor's browser asks NASA (a few hundred bytes, on opening and every 10 min) whether it has newer fires than the published copy; if it does (and GitHub hasn't published them within 15 min), the browser reads NASA's last-24-hours file (~6 MB) from the FIRMS mirror that allows browser access, joins it to the earlier days, and builds the same live data with the same rules (the 7-day file if the copy is over a day old), including the gas-flare mask and each country's recorded cells outside its border (`app/static/live.js`, parity-tested against `pipeline/live.py`), showing the published copy until it is ready; the app flags live data more than 6 h behind NASA | checks NASA every 10 min, downloads when the data changed (`app/nrt.py`) |
+| Live fires | NASA serves the feed from two servers that update independently; `app/feeds.py` takes the newest data from either and dates it by content (a server re-stamping an unchanged file doesn't count as new). A cloud watcher (`.github/workflows/live.yml`) checks NASA every 5 min around the clock and rebuilds the site when NASA posts new data, handing over to its own successor every ~5.5 h, so neither a laptop nor GitHub's best-effort schedule is needed; a second self-renewing chain, the guardian (`.github/workflows/guard.yml`, plain shell), checks every 10 min that the watcher runs and restarts it, while the watcher restarts the guardian, so neither depends on GitHub's schedule (which drops most scheduled runs); the schedules, every website build and the local server (`pipeline/keeper.py`) are extra restarters. Independently of GitHub, each visitor's browser asks NASA (a few hundred bytes, on opening and every 10 min) whether it has newer fires than the published copy; if it does (and GitHub hasn't published them within 15 min), the browser reads NASA's last-24-hours file (~6 MB) from the FIRMS mirror that allows browser access, joins it to the earlier days, and builds the same live data with the same rules (the 7-day file if the copy is over a day old), including the gas-flare mask and each country's recorded cells outside its border (`app/static/live.js`, parity-tested against `pipeline/live.py`), showing the published copy until it is ready; the app flags live data whose NASA file is more than 6 h old (NASA updates it several times a day) | checks NASA every 10 min, downloads when the data changed (`app/nrt.py`) |
 
 Both use the same harmonization: `app/analysis.py` (Python) and `app/static/engine.js` (browser)
 are checked against each other by `tests/test_engine_parity.py` on every change.
@@ -118,15 +118,22 @@ a memory cap (`FIRECAL_BUILD_MEMORY`, default 2GB), so its memory stays flat at 
    `k_world` is **fixed and versioned** in `app/resources/prior.json` (pooled over the countries listed
    there; regenerate with `pipeline/prior.py` and commit), so an area's results never depend on which
    other countries happen to be loaded. All parameters live in `app/constants.py`.
-4. **Three eras.** Terra-only (Nov 2000 – Jul 2002, half the overpasses) gets its own factor; Terra+Aqua (→ Jan 2012) is scaled by `k_month`; VIIRS is the reference afterwards. Terra's orbit drift is excluded from its fit from 2022, where the data show it: the worldwide VIIRS/Terra ratio was 6.73 ± 0.25 in 2012–2019 and normal in 2020–2021, then jumped to 7.62 in 2022 (+3.6 σ) as Terra's share of MODIS fires fell.
-5. **VIIRS outages.** On 45 days since 2012 (e.g. 27 Jul – 10 Aug 2022 and five episodes in 2024) S-NPP VIIRS recorded almost nothing worldwide while MODIS saw fires as usual. These are found once over all countries (`pipeline/prior.py`: VIIRS below a quarter of its usual ratio to MODIS) and listed in `prior.json`; on those days the record is filled from calibrated MODIS, as before 2012, and they are left out of every fit and test, instead of reading as "no fire" (false anomalies and a low calibration).
+4. **Three eras.** Terra-only (Nov 2000 – Jul 2002, half the overpasses) gets its own factor; Terra+Aqua (→ Jan 2012) is scaled by `k_month`; VIIRS is the reference afterwards. Terra's orbit drift is excluded from its fit from 2022, where the data show it: the worldwide VIIRS/Terra ratio was 6.71 ± 0.24 in 2012–2019 and normal in 2020–2021, then rose to 7.33 in 2022 (+2.6 σ), 7.34 in 2023 and 7.90 in 2024, as Terra's share of MODIS fires fell from about 0.39 to 0.37 and 0.34 (outage days left out).
+5. **Sensor outages.** Satellites sometimes record almost nothing for days while the others see fires as usual. Read as "no fire", such days create false anomalies (Angola's June 2001 looked like its most unusual month) and drag calibrations down. `pipeline/prior.py` finds them once over all countries (a sensor below a quarter of its usual share of the record, over the surrounding 61 days) and lists them in `prior.json`:
+   - VIIRS out worldwide on 45 days (e.g. 27 Jul – 10 Aug 2022 and five episodes in 2024): calibrated MODIS stands in, as before 2012;
+   - VIIRS out over a 10° band of longitude (a lost orbit) on 18 days, e.g. West Africa on 31 Jan 2024 and Central Africa on 24 Mar 2012 (VIIRS under a tenth of its usual ratio there): MODIS stands in inside that band only;
+   - MODIS, or its Terra part, out on 70 days (e.g. 15 Jun – 3 Jul 2001 and 20–28 Mar 2002, when Terra was the only MODIS): before 2012 these days have no usable record, so each is estimated as the area's usual fire for that date, scaled to the level of the same month's recorded days;
+   - Aqua out on 35 days (MODIS then holds Terra alone): Terra × k_terra stands in.
+
+   Every outage day is left out of every fit and test. The map layers use the same rules.
 6. **Validate.** Leave-one-year-out cross-validation predicts each VIIRS year from MODIS alone, plus a VIIRS-independent check (Terra-only vs Terra+Aqua, 2003–2011). The held-out year still counts towards the worldwide prior `k_world` (pooled over all years), which matters only where an area leans on that prior; the monthly R² is in-sample.
 
-Results (median out-of-sample annual error, worldwide prior k_world = 2.665 from all 208 countries):
-DR Congo **1.5%** (monthly R² 0.99), India **1.8%**, Nigeria **2.0%** (R² 0.99), Brazil 3.4%, Russia 3.5%,
-Ghana 3.7%, Australia 4.0%, Togo 5.0%, United States 6.8%. Areas with few fires (under 3,000 VIIRS
+Results (median out-of-sample annual error, worldwide prior k_world = 2.653 from all 208 countries):
+DR Congo **0.9%** (monthly R² 0.99), Nigeria **1.9%** (R² 0.99), India **2.1%**, Brazil 3.0%, Ghana 3.0%,
+Australia 3.3%, Russia 3.8%, Togo 5.2%, United States 7.2%. Areas with few fires (under 3,000 VIIRS
 fire cell-days in 2012+), a weak monthly fit (R² < 0.5) or a test error above 15% are flagged
-**"indicative only"** with the reason, e.g. Cyprus (≈110 fire cell-days a year, 14.4%) and Germany (28.1%).
+**"indicative only"** with the reason, e.g. Cyprus (about 100 VIIRS fire cell-days a year, 1,270 since 2012; 13.9%)
+and Germany (28.1%).
 The test suite in `tests/` checks that the method recovers a known ratio, removes the artificial 2012 jump,
 that the browser and Python engines agree, and that the website's tiles reproduce the server exactly.
 
@@ -141,7 +148,7 @@ NASA FIRMS 7-day NRT feed ──► app/nrt.py (server) / pipeline/live.py (webs
 
 pipeline/world.py + pipeline/sync.py ──► GitHub release "firecal-data" ──► .github/workflows/pages.yml
                       ──► tests ──► pipeline/static_site.py + pipeline/live.py ──► GitHub Pages
-pipeline/keeper.py (cloud watcher and local server: rebuild the website when it falls behind NASA; restart the watcher)
+pipeline/keeper.py (cloud watcher and local server: rebuild the website when it falls behind NASA; restart the watcher and the guardian; re-enable workflows GitHub paused for inactivity)
 pipeline/boundaries.py (Natural Earth → app/resources), pipeline/places.py (GeoNames → app/resources/places), pipeline/prior.py (→ app/resources/prior.json)
 ```
 
@@ -156,5 +163,11 @@ API: `/api/calendar?country=Kenya` or `?bbox=w,s,e,n`, `/api/nowcast`, `/api/gri
 - Near-real-time detections are provisional. Static-source masking uses each country's archive, so it applies once the country is loaded.
 - Boxes must not cross the 180° meridian. Both editions decide which countries a box touches from the same border file (`app/resources/shapes.geojson`, Natural Earth 1:50m snapped to 0.0001°); `tests/test_geo_parity.py` checks the browser and server agree.
 - Map layers show VIIRS-equivalent fire days per 0.1° cell (whole-country ratios, not month by month); multi-year layers are the mean per year over the years that hold that month (or the record's length).
-- Place names come from the nearest notable town (bigger towns count as a little closer), the same answer as searching every town on Earth; only places with no town within 250 km at all (open ocean, ice sheets) get none.
+- Place names come from the nearest notable town among every GeoNames town of 1 000+ people (bigger towns count as a little closer: distance / (1 + 0.25·log10(population / 1000))); each 2° tile holds every town that can win somewhere inside it, so the answer is the same as searching every town on Earth. Places with no town within 250 km at all (open ocean, ice sheets) get none.
 - Fire cell-days measure *how widespread* burning is, not burned area or emissions.
+- Partial sensor losses (a sensor at a quarter to a half of its usual share, e.g. Aqua in August 2020) are not corrected; only clear outages are (see the method, step 5).
+- The season starts the month after the quietest month; where two months are almost equally quiet (e.g. Russia, December vs January), a small change in the data can move the start by a month.
+
+## License
+
+Apache License 2.0 (see `LICENSE`). NASA FIRMS data, Natural Earth and GeoNames (CC BY 4.0) keep their own terms.

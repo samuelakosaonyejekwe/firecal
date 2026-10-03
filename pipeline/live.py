@@ -72,9 +72,12 @@ def main():
     args = ap.parse_args()
     site, build = pathlib.Path(args.site), pathlib.Path(args.build)
     out = site / "data" / "live"
+    kept = build / "live_kept"  # tells the website workflow the published live fires were kept (NASA unreachable)
+    kept.unlink(missing_ok=True)
 
     try:
-        old_meta = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
+        # the data already shown: this folder's copy, else the published site's (a fresh site build has none)
+        old_meta = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else published_meta(args.keep_from)
         known = ((old_meta["source_bytes"], dt.datetime.fromisoformat(old_meta["source_last_modified"]))
                  if old_meta.get("source_bytes") and old_meta.get("source_last_modified") else None)
         url, first, size = newest(known=known)  # whichever NASA server has the newest data (app/feeds.py)
@@ -85,18 +88,30 @@ def main():
         # NASA unreachable: publish everything else with the live fires the website already shows
         print(f"NASA unreachable ({e.__class__.__name__}: {e}); keeping the published live fires", flush=True)
         keep_published(args.keep_from, out, build)
+        build.mkdir(parents=True, exist_ok=True)
+        kept.write_text(f"{e.__class__.__name__}: {e}\n")
         return
     if cells is None:
         print("NASA feed unchanged; nothing to do")
         sys.exit(3)
-    old = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
-    modified = old["source_last_modified"] if old.get("source_bytes") == size else first.isoformat()
+    modified = old_meta["source_last_modified"] if old_meta.get("source_bytes") == size else first.isoformat()
     publish(cells, out, build, modified, size)
 
 
 def _unchanged(out: pathlib.Path, first, size) -> bool:
     old = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
     return old.get("source_bytes") == size or old.get("source_last_modified") == first.isoformat()
+
+
+def published_meta(site_url: str | None) -> dict:
+    """The live meta the website shows now ({} if there is no site to ask, or it can't be read)."""
+    if not site_url or not site_url.startswith("http"):
+        return {}
+    try:
+        url = site_url.rstrip("/") + f"/data/live/meta.json?nocache={int(time.time())}"
+        return json.load(urllib.request.urlopen(url, timeout=60))
+    except Exception:
+        return {}
 
 
 def keep_published(site_url: str, out: pathlib.Path, build: pathlib.Path):

@@ -8,13 +8,16 @@ dated by the first moment any server published that content:
   * the newest server is the one with the latest Last-Modified time, except that a caller who says which
     content it already has (`known`: its size and publication time) gets a server offering different content
     published after that: an old file re-stamped later on one server must not hide new data on the other;
+  * if no server offers newer content than the caller's, the caller's data is the answer (never an older file
+    still served by a lagging server while the up-to-date one is down);
   * if the other server has a file of the same size, it is the same data, published at the earlier time.
 
 A re-stamped, unchanged file therefore never looks new (no needless website rebuilds or browser
 downloads), and genuinely new data is picked up from whichever server has it first. If one server is
 down, the other is used. Standard library only: the website workflow runs it before installing anything.
 
-    python3 app/feeds.py    # prints: <version time> <size> <url>
+    python3 app/feeds.py                    # prints: <version time> <size> <url>
+    python3 app/feeds.py <size> <time>      # the same, knowing which data the caller already has
 """
 from __future__ import annotations
 
@@ -57,11 +60,18 @@ def newest(timeout: int = 60, waits=(10, 30), known: tuple[int, dt.datetime] | N
         raise OSError("no NASA FIRMS server answered")
     # content the caller doesn't have yet and that is newer than what it has (a lagging server's older file isn't)
     new = [s for s in seen if known is None or (s[2] != known[0] and s[1] > known[1])]
-    url, modified, size = max(new or seen, key=lambda s: s[1])
+    if known is not None and not new:
+        # nothing newer anywhere: the caller's data stands, even if the server holding it is down and the other
+        # still serves an older file (which must never roll the caller back)
+        same = [s for s in seen if s[2] == known[0]]
+        return (same or seen)[0][0], min([known[1], *(m for _, m, _ in same)]), known[0]
+    url, _, size = max(new or seen, key=lambda s: s[1])
     first = min(m for _, m, n in seen if n == size)  # same content elsewhere: it was published then
     return url, first, size
 
 
 if __name__ == "__main__":
-    u, m, n = newest()
+    import sys
+    known = (int(sys.argv[1]), dt.datetime.fromisoformat(sys.argv[2])) if len(sys.argv) == 3 else None
+    u, m, n = newest(known=known)
     print(m.isoformat(), n, u)

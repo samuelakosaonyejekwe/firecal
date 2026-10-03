@@ -2,6 +2,9 @@
 # Runs when code changes, when pipeline/world.py publishes new countries, when the live-fire watcher
 # (live.yml) sees newer NASA fires, and every 15 minutes on GitHub's best-effort schedule. Runs that
 # find nothing new exit in seconds.
+# Never fails: if anything can't finish (NASA, GitHub or PyPI briefly unreachable, a commit whose tests fail), the
+# website keeps its last good version (with fresh live fires where possible), the run says why in a warning, and
+# the next run tries again.
 name: Publish website
 
 on:
@@ -30,20 +33,23 @@ jobs:
     timeout-minutes: 75
     steps:
       - name: Wait for older website runs to finish
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for i in $(seq 1 140); do  # up to ~70 minutes, then go ahead anyway
-            older=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow pages.yml --limit 30 --json databaseId,status \
+          end=$(( $(date +%s) + 65 * 60 ))  # by the clock, well inside the job's limit; then go ahead anyway
+          while [ "$(date +%s)" -lt "$end" ]; do
+            older=$(timeout 60 gh run list --repo "$GITHUB_REPOSITORY" --workflow pages.yml --limit 30 --json databaseId,status \
                     --jq "[.[] | select(.databaseId < $GITHUB_RUN_ID and .status != \"completed\")] | length" || echo 0)
             [ "$older" = "0" ] && exit 0
-            [ "$i" = 1 ] && echo "waiting for $older older website run(s) to finish"
+            echo "waiting for $older older website run(s) to finish"
             sleep 30
           done
-          echo "::notice::older website runs still busy after 70 minutes; going ahead"
+          echo "::notice::older website runs still busy after 65 minutes; going ahead"
 
   publish:
     needs: queue
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     environment:
@@ -51,25 +57,43 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        id: co
+        continue-on-error: true
         with:
           persist-credentials: false
 
       - name: Fingerprint data, code and NASA feed
         id: fp
+        if: steps.co.outcome == 'success'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set +o pipefail  # a lookup that fails (NASA down, no release yet) yields a fallback fingerprint, not a failed build
-          data=$(gh release view firecal-data --json assets --jq '[.assets[] | .name + "@" + .updatedAt] | sort | join(",")' 2>/dev/null | sha1sum | cut -c1-16)
+          set +o pipefail  # a lookup that fails yields a one-off fingerprint (nothing cached is reused), not a failed run
+          site="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/"
+          if assets=$(timeout 120 gh release view firecal-data --json assets --jq '[.assets[] | .name + "@" + .updatedAt] | sort | join(",")'); then
+            data=$(printf '%s' "$assets" | sha1sum | cut -c1-16)
+          else
+            data="nocache-$GITHUB_RUN_ID"
+          fi
           code=$(git ls-files -s app pipeline tests requirements.txt requirements-dev.txt .github/workflows/pages.yml | sha1sum | cut -c1-16)
-          # NASA's data, identified by its file size on the newest server (app/feeds.py): a re-stamped,
-          # unchanged file doesn't trigger a rebuild
-          nasa=$(python3 app/feeds.py 2>/dev/null | cut -d' ' -f2 | sha1sum | cut -c1-16)
+          # NASA's data, identified by its file size (app/feeds.py), told which data the live site already shows so an
+          # old file re-stamped on one server can't hide new data on the other
+          known=$(curl -sf --max-time 60 "${site}data/live/meta.json" \
+                  | python3 -c 'import json,sys; m=json.load(sys.stdin); print(m["source_bytes"], m["source_last_modified"])' 2>/dev/null || true)
+          if line=$(timeout 300 python3 app/feeds.py $known 2>/dev/null); then
+            nasa=$(printf '%s' "$line" | cut -d' ' -f2 | sha1sum | cut -c1-16)
+          else
+            nasa="unknown-$GITHUB_RUN_ID"
+          fi
+          echo "site_url=$site" >> "$GITHUB_OUTPUT"
           echo "site=site-$data-$code" >> "$GITHUB_OUTPUT"
           echo "published=published-$data-$code-$nasa" >> "$GITHUB_OUTPUT"
 
       - name: Already published this exact state?
         id: done
+        if: steps.fp.outcome == 'success'
+        continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
         with:
           path: .published
@@ -77,37 +101,42 @@ jobs:
           lookup-only: true
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
-        if: steps.done.outputs.cache-hit != 'true'
+        id: py
+        if: steps.fp.outcome == 'success' && steps.done.outputs.cache-hit != 'true'
+        continue-on-error: true
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
       - name: Install
-        if: steps.done.outputs.cache-hit != 'true'
-        run: pip install -r requirements-dev.txt
+        id: install
+        if: steps.py.outcome == 'success'
+        continue-on-error: true
+        run: for i in 1 2 3; do pip install -r requirements-dev.txt && break; [ "$i" = 3 ] && exit 1; sleep $((i * 20)); done
 
       - name: Restore built site
         id: site
-        if: steps.done.outputs.cache-hit != 'true'
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
         with:
           path: |
             site
             build
           key: ${{ steps.fp.outputs.site }}
+          # no exact match: the most recent site, so live fires can still be refreshed if this commit fails its tests
+          restore-keys: site-
 
-      # Nothing below fails the run: if a step can't finish (NASA or GitHub briefly unreachable, a bad commit), the
-      # website keeps its last good version, the run says why in a warning, and the next run (≤ 15 min) tries again.
       - name: Test (code or data changed)
         id: test
-        if: steps.done.outputs.cache-hit != 'true' && steps.site.outputs.cache-hit != 'true'
+        if: steps.install.outcome == 'success' && steps.site.outputs.cache-hit != 'true'
         continue-on-error: true
         run: python -m pytest -q tests
 
       - name: Build site from published countries
         id: build
-        if: steps.done.outputs.cache-hit != 'true' && steps.site.outputs.cache-hit != 'true' && steps.test.outcome != 'failure'
+        if: steps.test.outcome == 'success'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -129,7 +158,8 @@ jobs:
           python pipeline/static_site.py --out site --build build
 
       - name: Save built site
-        if: steps.done.outputs.cache-hit != 'true' && steps.build.outcome == 'success'
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
         with:
           path: |
@@ -139,19 +169,20 @@ jobs:
 
       - name: Refresh live fires
         id: live
-        if: steps.done.outputs.cache-hit != 'true' && steps.test.outcome != 'failure' && steps.build.outcome != 'failure'
+        # on this commit's site, or (if its tests failed) on the last good one: live fires never stop updating
+        if: steps.install.outcome == 'success' && steps.build.outcome != 'failure' && hashFiles('site/index.html') != ''
         continue-on-error: true
         # if NASA can't be reached, keep the live fires already published and deploy everything else
-        run: python pipeline/live.py --site site --build build --force --keep-from "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+        run: python pipeline/live.py --site site --build build --force --keep-from "${{ steps.fp.outputs.site_url }}"
 
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d  # v6
         id: configure
-        if: steps.done.outputs.cache-hit != 'true' && steps.test.outcome != 'failure' && steps.build.outcome != 'failure' && steps.live.outcome == 'success'
+        if: steps.live.outcome == 'success'
         continue-on-error: true
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
         id: upload
-        if: steps.done.outputs.cache-hit != 'true' && steps.test.outcome != 'failure' && steps.build.outcome != 'failure' && steps.live.outcome == 'success' && steps.configure.outcome == 'success'
+        if: steps.configure.outcome == 'success'
         continue-on-error: true
         with:
           path: site
@@ -172,9 +203,14 @@ jobs:
         continue-on-error: true
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5
 
+      # Only a state that was fully published is remembered: this commit's code (built now or restored exactly) and
+      # NASA's data as fingerprinted (not the fallback copy kept when NASA couldn't be reached).
       - name: Remember this state
         id: deployed
-        if: steps.deploy.outcome == 'success' || steps.deploy2.outcome == 'success'
+        if: >-
+          (steps.deploy.outcome == 'success' || steps.deploy2.outcome == 'success')
+          && (steps.build.outcome == 'success' || steps.site.outputs.cache-hit == 'true')
+          && hashFiles('build/live_kept') == ''
         run: mkdir -p .published && date -u > .published/at
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
@@ -185,21 +221,28 @@ jobs:
           key: ${{ steps.fp.outputs.published }}
 
       - name: Report
-        if: steps.done.outputs.cache-hit != 'true' && steps.deployed.outcome != 'success'
+        if: ${{ !cancelled() && steps.done.outputs.cache-hit != 'true' && steps.deployed.outcome != 'success' }}
         env:
+          CHECKOUT: ${{ steps.co.outcome }}
+          INSTALL: ${{ steps.install.outcome }}
           TEST: ${{ steps.test.outcome }}
           BUILD: ${{ steps.build.outcome }}
           LIVE: ${{ steps.live.outcome }}
+          CONFIGURE: ${{ steps.configure.outcome }}
+          UPLOAD: ${{ steps.upload.outcome }}
           DEPLOY: ${{ steps.deploy2.outcome || steps.deploy.outcome }}
         run: |
-          echo "::warning::Not published this time (tests: $TEST, build: $BUILD, live fires: $LIVE, deploy: $DEPLOY); the website keeps its last good version and the next run tries again"
+          kept=""; [ -f build/live_kept ] && kept=" (NASA unreachable: the published live fires were kept)"
+          echo "::warning::Not fully published this time$kept (checkout $CHECKOUT, install $INSTALL, tests $TEST, build $BUILD, live fires $LIVE, configure $CONFIGURE, upload $UPLOAD, deploy $DEPLOY); the next run tries again"
 
       - name: Make sure the live-fire watcher is running
         if: ${{ !cancelled() }}
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
         run: |
           # .github/workflows/live.yml keeps the live fires fresh around the clock; restart it if it stopped
           [ -n "$GH_TOKEN" ] || exit 0
-          active=$(gh run list --workflow live.yml --limit 5 --json status --jq '[.[] | select(.status != "completed")] | length' || echo 1)
-          [ "$active" = "0" ] && gh workflow run live.yml && echo "started the live-fire watcher" || true
+          active=$(timeout 60 gh run list --repo "$GITHUB_REPOSITORY" --workflow live.yml --limit 10 --json status \
+                   --jq '[.[] | select(.status != "completed")] | length' || echo 1)
+          if [ "$active" = "0" ]; then timeout 60 gh workflow run live.yml --repo "$GITHUB_REPOSITORY" && echo "started the live-fire watcher" || true; fi

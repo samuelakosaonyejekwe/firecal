@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .analysis import Store, NeedsData
 from .constants import MODIS_START, SERVER_MAX_BOX_DEG2 as MAX_BOX_DEG2, VIIRS_START
+from .fingerprint import fingerprint
 from .jobs import Jobs
 from .nrt import NRTFeed
 
@@ -83,6 +84,7 @@ async def security(request: Request, call_next):
     return response
 
 # cache-busting version for static assets: changes whenever a file changes
+BUILD = fingerprint()  # the code this server runs (start.sh restarts it when the checkout has changed)
 VERSION = hashlib.sha1(b"".join(p.read_bytes() for p in sorted(STATIC.rglob("*")) if p.is_file())).hexdigest()[:10]
 
 
@@ -127,7 +129,7 @@ def needs_data(e: NeedsData):
 @app.get("/api/health")
 def health():
     store.refresh()  # report countries added on disk since the last request
-    return {"ok": True, "countries_ready": len(store.ready), "live_feed": nrt.fetched_at(), "live_error": nrt.error}
+    return {"ok": True, "build": BUILD, "countries_ready": len(store.ready), "live_feed": nrt.fetched_at(), "live_error": nrt.error}
 
 
 @app.get("/api/meta")
@@ -159,6 +161,8 @@ def calendar(country: str | None = None, bbox: str | None = None):
 
 @app.get("/api/grid")
 def grid(bbox: str, year: int | None = Query(None, ge=2000, le=2100), month: int | None = Query(None, ge=1, le=12)):
+    if year is not None and not MODIS_START.year <= year <= store.end.year:  # each layer scans (and caches) every country
+        raise HTTPException(400, f"year must be within the record, {MODIS_START.year}–{store.end.year}")
     return cached(store.grid(parse_bbox(bbox), year, month), 3600)
 
 

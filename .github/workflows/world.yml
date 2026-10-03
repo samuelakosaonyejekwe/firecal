@@ -3,9 +3,10 @@
 # NASA, harmonized, published to the "firecal-data" release under the owner's name (via the
 # FIRECAL_PUBLISH_TOKEN secret, a fine-grained token limited to this repository), and the website
 # is rebuilt. A monthly run picks up NASA's new yearly archives (--update). If countries are still
-# missing afterwards (e.g. a machine lost its connection to NASA), the run starts the next attempt
-# by itself on fresh machines, up to 3 attempts. GitHub's schedule is best-effort, so the live-fire
-# watcher (pipeline/keeper.py) also starts an update run if none has succeeded for 35 days.
+# missing or behind afterwards (e.g. a machine lost its connection to NASA, or ran out of time), the run
+# starts the next attempt by itself on fresh machines, up to 3 attempts. GitHub's schedule is best-effort,
+# so the live-fire watcher (pipeline/keeper.py) also starts an update run if none has succeeded for 35 days.
+# Never fails: anything left undone is reported in a warning and done by the next attempt or update.
 name: Build world
 run-name: "Build world (${{ (github.event_name == 'schedule' || inputs.update == 'true') && 'update' || 'missing countries' }})"
 
@@ -31,26 +32,29 @@ defaults:
 
 jobs:
   # One world build at a time, without cancelling anyone (a concurrency group would cancel a waiting run when a newer
-  # one arrives): each run waits here for older ones, and goes ahead before this job's time limit in any case.
+  # one arrives): each run waits here for older ones, by the clock, and goes ahead well inside this job's limit.
   queue:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
       - name: Wait for older world builds to finish
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for i in $(seq 1 330); do  # up to ~5.5 hours, then go ahead anyway
-            older=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow world.yml --limit 20 --json databaseId,status \
+          end=$(( $(date +%s) + 330 * 60 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            older=$(timeout 60 gh run list --repo "$GITHUB_REPOSITORY" --workflow world.yml --limit 20 --json databaseId,status \
                     --jq "[.[] | select(.databaseId < $GITHUB_RUN_ID and .status != \"completed\")] | length" || echo 0)
             [ "$older" = "0" ] && exit 0
-            [ "$i" = 1 ] && echo "waiting for $older older world build(s) to finish"
+            echo "waiting for $older older world build(s) to finish"
             sleep 60
           done
           echo "::notice::older world builds still busy; going ahead"
 
   shard:
     needs: queue
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
@@ -66,54 +70,68 @@ jobs:
         continue-on-error: true   # a missing or rejected key is reported here, and the steps below are skipped
         env:
           GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
+          WHAT: "nothing was built or published."
         run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::error::The FIRECAL_PUBLISH_TOKEN secret is missing; nothing was built or published."
-            exit 1
-          fi
-          # a real call: an expired or revoked key fails here, not hours later ("release not found" is a fine first run)
-          if ! gh release view firecal-data --repo "$GITHUB_REPOSITORY" > /dev/null 2> key.err && ! grep -qi "not found" key.err; then
-            echo "::error::GitHub rejected the FIRECAL_PUBLISH_TOKEN secret (expired or revoked?): $(cat key.err)"
-            exit 1
-          fi
-          # when the key expires (GitHub reports it on every call): logged on every run, a warning a month ahead
-          exp=$(gh api -i "repos/$GITHUB_REPOSITORY" 2>/dev/null | tr -d '\r' | sed -n 's/^[Gg]ithub-[Aa]uthentication-[Tt]oken-[Ee]xpiration: //p')
+          if [ -z "$GH_TOKEN" ]; then echo "::error::The FIRECAL_PUBLISH_TOKEN secret is missing; $WHAT"; exit 1; fi
+          # a real call, retried through GitHub hiccups: only a 401/403 means the key itself was rejected
+          # ("release not found" is a fine first run)
+          ok=""; out=""
+          for wait in 10 30 60 0; do
+            if out=$(timeout 60 gh release view firecal-data --repo "$GITHUB_REPOSITORY" --json tagName 2>&1); then ok=1; break; fi
+            if printf '%s' "$out" | grep -qi "not found"; then ok=1; break; fi
+            if printf '%s' "$out" | grep -qiE "HTTP 40[13]|bad credentials|resource not accessible"; then
+              echo "::error::GitHub rejected the FIRECAL_PUBLISH_TOKEN secret (expired or revoked?): $out"; exit 1
+            fi
+            [ "$wait" = 0 ] && break
+            sleep "$wait"
+          done
+          [ -n "$ok" ] || echo "::warning::GitHub didn't answer the key check ($out); going ahead"
+          # when the key expires (GitHub reports it on every call): logged on every run, a warning a month ahead; never fails
+          exp=$(timeout 60 gh api -i "repos/$GITHUB_REPOSITORY" 2>/dev/null | tr -d '\r' | sed -n 's/^[Gg]ithub-[Aa]uthentication-[Tt]oken-[Ee]xpiration: //p' || true)
           if [ -z "$exp" ]; then
-            echo "publishing key: no expiry date"
-          else
-            days=$(( ($(date -d "$exp" +%s) - $(date +%s)) / 86400 ))
+            echo "publishing key: no expiry date reported"
+          elif t=$(date -d "$exp" +%s 2>/dev/null); then
+            days=$(( (t - $(date +%s)) / 86400 ))
             echo "publishing key expires $exp ($days days left)"
             if [ "$days" -lt 30 ]; then
               echo "::warning::The FIRECAL_PUBLISH_TOKEN key expires on $exp ($days days left): renew it on GitHub (Settings > Developer settings > Fine-grained tokens) and update the repository secret"
             fi
+          else
+            echo "publishing key expiry not readable: $exp"
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        id: co
         if: steps.key.outcome == 'success'
+        continue-on-error: true
         with:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
-        if: steps.key.outcome == 'success'
+        id: py
+        if: steps.co.outcome == 'success'
+        continue-on-error: true
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.txt
       - name: Install
         id: install
-        if: steps.key.outcome == 'success'
-        run: pip install -r requirements.txt
+        if: steps.py.outcome == 'success'
+        continue-on-error: true
+        run: for i in 1 2 3; do pip install -r requirements.txt && break; [ "$i" = 3 ] && exit 1; sleep $((i * 20)); done
       - name: Build and publish this shard's countries
         if: steps.install.outcome == 'success'
-        # never fails the run: countries this worker couldn't finish are listed as missing and retried below
+        # never fails the run: what this worker couldn't finish (in its time budget, or at all) is retried below
         continue-on-error: true
+        timeout-minutes: 335   # a hard stop inside the job's limit; --minutes stops starting new countries well before
         env:
           GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
           UPDATE: ${{ (github.event_name == 'schedule' || inputs.update == 'true') && 'true' || 'false' }}
           SHARD: ${{ matrix.shard }}
         run: |
           if [ "$UPDATE" = "true" ]; then
-            python pipeline/world.py --shard "$SHARD/10" --update
+            python pipeline/world.py --shard "$SHARD/10" --minutes 240 --update
           else
-            python pipeline/world.py --shard "$SHARD/10" --skip-published
+            python pipeline/world.py --shard "$SHARD/10" --minutes 240 --skip-published
           fi
 
   finalize:
@@ -131,49 +149,62 @@ jobs:
         continue-on-error: true   # a missing or rejected key is reported here, and the steps below are skipped
         env:
           GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
+          WHAT: "nothing was changed."
         run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::error::The FIRECAL_PUBLISH_TOKEN secret is missing; nothing was changed."
-            exit 1
-          fi
-          # a real call: an expired or revoked key fails here, not hours later ("release not found" is a fine first run)
-          if ! gh release view firecal-data --repo "$GITHUB_REPOSITORY" > /dev/null 2> key.err && ! grep -qi "not found" key.err; then
-            echo "::error::GitHub rejected the FIRECAL_PUBLISH_TOKEN secret (expired or revoked?): $(cat key.err)"
-            exit 1
-          fi
-          # when the key expires (GitHub reports it on every call): logged on every run, a warning a month ahead
-          exp=$(gh api -i "repos/$GITHUB_REPOSITORY" 2>/dev/null | tr -d '\r' | sed -n 's/^[Gg]ithub-[Aa]uthentication-[Tt]oken-[Ee]xpiration: //p')
+          if [ -z "$GH_TOKEN" ]; then echo "::error::The FIRECAL_PUBLISH_TOKEN secret is missing; $WHAT"; exit 1; fi
+          # a real call, retried through GitHub hiccups: only a 401/403 means the key itself was rejected
+          # ("release not found" is a fine first run)
+          ok=""; out=""
+          for wait in 10 30 60 0; do
+            if out=$(timeout 60 gh release view firecal-data --repo "$GITHUB_REPOSITORY" --json tagName 2>&1); then ok=1; break; fi
+            if printf '%s' "$out" | grep -qi "not found"; then ok=1; break; fi
+            if printf '%s' "$out" | grep -qiE "HTTP 40[13]|bad credentials|resource not accessible"; then
+              echo "::error::GitHub rejected the FIRECAL_PUBLISH_TOKEN secret (expired or revoked?): $out"; exit 1
+            fi
+            [ "$wait" = 0 ] && break
+            sleep "$wait"
+          done
+          [ -n "$ok" ] || echo "::warning::GitHub didn't answer the key check ($out); going ahead"
+          # when the key expires (GitHub reports it on every call): logged on every run, a warning a month ahead; never fails
+          exp=$(timeout 60 gh api -i "repos/$GITHUB_REPOSITORY" 2>/dev/null | tr -d '\r' | sed -n 's/^[Gg]ithub-[Aa]uthentication-[Tt]oken-[Ee]xpiration: //p' || true)
           if [ -z "$exp" ]; then
-            echo "publishing key: no expiry date"
-          else
-            days=$(( ($(date -d "$exp" +%s) - $(date +%s)) / 86400 ))
+            echo "publishing key: no expiry date reported"
+          elif t=$(date -d "$exp" +%s 2>/dev/null); then
+            days=$(( (t - $(date +%s)) / 86400 ))
             echo "publishing key expires $exp ($days days left)"
             if [ "$days" -lt 30 ]; then
               echo "::warning::The FIRECAL_PUBLISH_TOKEN key expires on $exp ($days days left): renew it on GitHub (Settings > Developer settings > Fine-grained tokens) and update the repository secret"
             fi
+          else
+            echo "publishing key expiry not readable: $exp"
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        id: co
         if: steps.key.outcome == 'success'
+        continue-on-error: true
         with:
-          persist-credentials: false   # the push key is handed to git only in the step that pushes (below)
-          fetch-depth: 20
+          persist-credentials: false
+          fetch-depth: 20   # (the push key is handed to git only in the step that pushes, below)
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
-        if: steps.key.outcome == 'success'
+        id: py
+        if: steps.co.outcome == 'success'
+        continue-on-error: true
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.txt
       - name: Install
         id: install
-        if: steps.key.outcome == 'success'
-        run: pip install -r requirements.txt
+        if: steps.py.outcome == 'success'
+        continue-on-error: true
+        run: for i in 1 2 3; do pip install -r requirements.txt && break; [ "$i" = 3 ] && exit 1; sleep $((i * 20)); done
       # none of the steps below fails the run: anything left undone is reported in a warning and done next time
       - name: Download every published country
         id: dl
         if: steps.install.outcome == 'success'
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}   # reading the public release needs no publishing key
         run: |
           mkdir -p dl data/countries
           for i in 1 2 3 4 5; do  # GitHub's API sometimes answers 500 for a moment: retry
@@ -183,13 +214,14 @@ jobs:
           for f in dl/*.grid_daily.parquet; do
             c=$(basename "$f" .grid_daily.parquet); mkdir -p "data/countries/$c"; mv "$f" "data/countries/$c/grid_daily.parquet"
           done
-      - name: Find countries still missing
+      - name: Find countries still missing or behind
         id: missing
         if: steps.dl.outcome == 'success'
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
-        run: python pipeline/world.py --missing | tee missing.txt
+          GH_TOKEN: ${{ github.token }}
+          UPDATE: ${{ (github.event_name == 'schedule' || inputs.update == 'true') && 'true' || 'false' }}
+        run: python pipeline/world.py --missing $([ "$UPDATE" = true ] && echo --update) | tee missing.txt
       - name: Update the worldwide calibration prior if due
         id: prior
         if: steps.missing.outcome == 'success'
@@ -209,24 +241,27 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
           ATTEMPT: ${{ inputs.attempt || '1' }}
-          SHARDS: ${{ needs.shard.result }}
           UPDATE: ${{ (github.event_name == 'schedule' || inputs.update == 'true') && 'true' || 'false' }}
         run: |
-          # again on fresh machines, in the same mode, if a country is missing or a worker failed
-          if ! grep -q "^0 countries" missing.txt || [ "$SHARDS" != "success" ]; then
-            if [ "$ATTEMPT" -lt 3 ]; then
-              gh workflow run world.yml -f attempt=$((ATTEMPT + 1)) -f update=$UPDATE
-              echo "started attempt $((ATTEMPT + 1)) (update=$UPDATE)"
-            else
-              echo "::warning::incomplete after $ATTEMPT attempts; the next update (at most 35 days away) or the local preload will finish it"
-            fi
+          # again on fresh machines, in the same mode, if a country is still missing (or behind, in an update)
+          grep -q "^0 countries" missing.txt && exit 0
+          if [ "$ATTEMPT" -ge 3 ]; then
+            echo "::warning::incomplete after $ATTEMPT attempts; the next update (at most 35 days away) or the local preload will finish it"; exit 0
           fi
+          for wait in 20 40 80 0; do
+            timeout 60 gh workflow run world.yml --repo "$GITHUB_REPOSITORY" -f attempt=$((ATTEMPT + 1)) -f update=$UPDATE \
+              && echo "started attempt $((ATTEMPT + 1)) (update=$UPDATE)" && exit 0
+            [ "$wait" = 0 ] && break
+            sleep "$wait"
+          done
+          echo "::warning::could not start the next attempt; the next update finishes it"
       - name: Report
-        if: ${{ !cancelled() && (steps.key.outcome != 'success' || steps.dl.outcome != 'success' || steps.missing.outcome != 'success' || steps.prior.outcome == 'failure' || steps.retry.outcome == 'failure') }}
+        if: ${{ !cancelled() && (steps.key.outcome != 'success' || steps.install.outcome != 'success' || steps.dl.outcome != 'success' || steps.missing.outcome != 'success' || steps.prior.outcome == 'failure' || steps.retry.outcome == 'failure') }}
         env:
           KEY: ${{ steps.key.outcome }}
+          INSTALL: ${{ steps.install.outcome }}
           DL: ${{ steps.dl.outcome }}
           MISSING: ${{ steps.missing.outcome }}
           PRIOR: ${{ steps.prior.outcome }}
           RETRY: ${{ steps.retry.outcome }}
-        run: echo "::warning::Not everything finished (key $KEY, download $DL, missing list $MISSING, prior $PRIOR, retry $RETRY); the next run or the monthly update completes it"
+        run: echo "::warning::Not everything finished (key $KEY, install $INSTALL, download $DL, missing list $MISSING, prior $PRIOR, retry $RETRY); the next run or the monthly update completes it"

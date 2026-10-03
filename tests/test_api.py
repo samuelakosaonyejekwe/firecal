@@ -45,6 +45,7 @@ def test_bad_inputs_are_rejected():
     assert client.post("/api/prepare", json=["Atlantis"]).status_code == 404
     assert client.post("/api/prepare", json=["Chad"] * 13).status_code == 400
     assert client.get("/api/grid?bbox=0,0,1,1&month=13").status_code == 422
+    assert client.get("/api/grid?bbox=0,0,1,1&year=2099").status_code == 400  # outside the record
 
 
 def test_grid_and_locate():

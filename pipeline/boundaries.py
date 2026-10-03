@@ -82,10 +82,9 @@ def main():
             world.append({"type": "Feature", "properties": {"id": fid, "name": name},
                           "geometry": mapping(gw.simplify(0.02, preserve_topology=True))})
         meta.append({"id": fid, "name": name, "bbox": bbox, "view": view})
-    json.dump(meta, open(RES / "countries.json", "w"), ensure_ascii=False, separators=(",", ":"))
-    json.dump({"type": "FeatureCollection", "features": shapes}, open(RES / "shapes.geojson", "w"), separators=(",", ":"))
-    json.dump({"type": "FeatureCollection", "features": world}, open(RES / "world.geojson", "w"),
-              ensure_ascii=False, separators=(",", ":"))
+    for name, obj, ascii_only in (("countries.json", meta, False), ("shapes.geojson", {"type": "FeatureCollection", "features": shapes}, True),
+                                  ("world.geojson", {"type": "FeatureCollection", "features": world}, False)):
+        (RES / name).write_text(json.dumps(obj, ensure_ascii=ascii_only, separators=(",", ":")), encoding="utf-8")
     print(f"{len(meta)} countries, {len(shapes)} with shapes", file=sys.stderr)
 
 

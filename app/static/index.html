@@ -265,7 +265,7 @@
   </main>
 
   <dialog id="help" class="help" aria-labelledby="helpTitle">
-    <h2 id="helpTitle">Welcome to FireCal</h2>
+    <h2 id="helpTitle" tabindex="-1">Welcome to FireCal</h2>
     <p>Satellites have watched fires since 2000, but the older <b>MODIS</b> sensors and the newer, sharper <b>VIIRS</b> sensor count them differently. FireCal <b>harmonizes</b> both into one consistent 24-year burning calendar for any place on Earth.</p>
     <ol>
       <li><b>Pick an area.</b> Search a country, tap or click it on the map (a tap on a phone first explains the colors there, with buttons for the country or just that area; on a computer, click a fire square inside the country already shown, or Shift-click one anywhere, for just that area), tap <b>◎ Me</b>, or <b>Draw area</b> for a custom box (up to 20° × 20° on the website).</li>
@@ -275,7 +275,7 @@
       <li><b>Share.</b> Every view has its own link. Print a report or download the data as CSV.</li>
       <li><b>Install &amp; offline.</b> Tap <b>Install</b> (the download arrow) at the top to install FireCal on your phone or computer and save every country for airplane mode.</li>
     </ol>
-    <p class="hint">A <b>fire cell-day</b> is one 0.1° grid cell (≈ 11 km) with at least one satellite fire detection that day. Press <kbd>/</kbd> to search.</p>
+    <p class="hint">A <b>fire cell-day</b> is one 0.1° grid cell (≈ 11 km) with at least one satellite fire detection that day.<span class="kbd-only"> Press <kbd>/</kbd> to search.</span></p>
     <form method="dialog"><button id="helpClose" type="submit">Get started</button></form>
   </dialog>
   <dialog id="installDlg" class="help" aria-labelledby="installTitle">
@@ -288,7 +288,7 @@
       <span id="offlineStatus" class="hint"></span>
     </div>
     <div class="pbar" id="offlineBar" hidden><i style="width:0%"></i></div>
-    <p class="hint">Live fires need a connection; offline, FireCal shows the last ones it saw. Drawn boxes work offline for the regions you have analyzed before.</p>
+    <p class="hint">Live fires need a connection; offline, FireCal shows the last ones it saw.<span class="web-only"> Drawn boxes work offline for the regions you have analyzed before.</span></p>
     <form method="dialog"><button type="submit" class="ghost">Close</button></form>
   </dialog>
   <div class="tip" id="tip"></div>

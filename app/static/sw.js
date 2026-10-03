@@ -135,14 +135,16 @@ self.addEventListener("message", (e) => {
   })());
 });
 
-async function networkFirst(req, cacheName) {
+// offline: the saved copy of this exact request; `loose` also accepts the same file saved with another ?query
+// (never for /api/, where the query names the area: another area's answer must never stand in)
+async function networkFirst(req, cacheName, loose = true) {
   const cache = await caches.open(cacheName);
   try {
     const res = await fetch(req);
     if (res.ok) cache.put(req, res.clone());
     return res;
   } catch (err) {
-    const hit = await cache.match(req) || await cache.match(req, { ignoreSearch: true });
+    const hit = await cache.match(req) || (loose && await cache.match(req, { ignoreSearch: true }));
     if (hit) return hit;
     throw err;
   }
@@ -207,8 +209,9 @@ background:linear-gradient(90deg,#ff8a1f,#e5381a)}</style></head><body><main>
 <div class="logo" aria-hidden="true">🔥</div><h1><b>FireCal</b> is reconnecting…</h1>
 <p>Your device lost its internet connection for a moment. This page reloads by itself as soon as it is back.</p>
 <button onclick="location.reload()">Try again now</button></main>
-<script>addEventListener("online",()=>location.reload());
-setInterval(()=>fetch(location.href,{cache:"no-store",method:"HEAD"}).then(r=>{if(r.ok)location.reload()},()=>{}),5000);</script>
+<script>/* reload only once FireCal really answers (a HEAD request goes past the worker, straight to the network) */
+const probe=()=>fetch(location.href,{cache:"no-store",method:"HEAD"}).then(r=>{if(r.ok)location.reload()},()=>{});
+addEventListener("online",probe);setInterval(probe,5000);</script>
 </body></html>`;
 
 async function page(e) { // the app page: fresh when online, the saved copy offline (any #hash or ?query)
@@ -242,8 +245,8 @@ self.addEventListener("fetch", (e) => {
   if (url.origin === location.origin) {
     const p = url.pathname.slice(BASE.length - 1); // path relative to the app root, starting with "/"
     if (p.startsWith("/api/jobs") || p.startsWith("/api/prepare")) return;                                  // progress: always live
-    if (p.startsWith("/api/") || p.startsWith("/data/live/") || p.startsWith("/data/meta.json"))
-      answer(e, networkFirst(req, DATA));                                                                   // fresh, offline fallback
+    if (p.startsWith("/api/")) answer(e, networkFirst(req, DATA, false));                                  // fresh, offline: same area only
+    else if (p.startsWith("/data/live/") || p.startsWith("/data/meta.json")) answer(e, networkFirst(req, DATA)); // fresh, offline fallback
     else if (p.startsWith("/data/") || p.startsWith("/places/")) answer(e, staleWhileRevalidate(req, DATA, e)); // history, place names
     else if (p.startsWith("/static/")) answer(e, appFile(req));                                           // versioned URLs
     else answer(e, networkFirst(req, SHELL));

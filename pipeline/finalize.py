@@ -73,10 +73,16 @@ def update_prior(dry_run=False, push=True, complete=False) -> str:
     git("commit", "-q", "-m", f"Update the worldwide calibration prior from {len(available)} countries",
         "-m", f"Recomputed by pipeline/finalize.py as the world grew: k_world {out['k_world']}, "
               f"k_terra_world {out['k_terra_world']}.", "--", str(PRIOR_FILE.relative_to(ROOT)))
-    if subprocess.run(["git", "push", "-q", "origin", "HEAD:main"], cwd=ROOT, capture_output=True,
-                      env=GIT_ENV, timeout=300).returncode:
-        return msg + "; committed, but the push failed (it will be pushed with your next push)"
-    return msg + "; committed and pushed (the website rebuilds)"
+    for _ in range(3):  # if main moved meanwhile, replay this one-file commit on top of it and try again
+        if not subprocess.run(["git", "push", "-q", "origin", "HEAD:main"], cwd=ROOT, capture_output=True,
+                              env=GIT_ENV, timeout=300).returncode:
+            return msg + "; committed and pushed (the website rebuilds)"
+        git("fetch", "-q", "origin", "main", check=False)
+        git("rebase", "-q", "origin/main", check=False)
+    if os.environ.get("GITHUB_ACTIONS") == "true":  # a cloud machine is discarded: say what happens instead
+        print("::warning::the recomputed calibration prior could not be pushed; the next world build recomputes it")
+        return msg + "; committed, but the push failed (the next world build recomputes it)"
+    return msg + "; committed, but the push failed (it goes out with your next push)"
 
 
 if __name__ == "__main__":

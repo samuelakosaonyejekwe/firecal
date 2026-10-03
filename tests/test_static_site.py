@@ -48,8 +48,11 @@ def test_site_files(built):
     assert 'src="static/live.js' in (out / "index.html").read_text() and (out / "static" / "live.js").exists()
     meta = json.loads((out / "data" / "meta.json").read_text())
     assert meta["prior"]["k_world"] == store.prior()[0]
-    from app.analysis import VIIRS_GAPS  # the browser engine gets the same VIIRS outage days as the server
+    from app.analysis import AQUA_OUT, MODIS_OUT, VIIRS_GAPS  # the browser engine gets the server's sensor outages
     assert meta["prior"]["viirs_gaps"] == [d.date().isoformat() for d in VIIRS_GAPS]
+    assert meta["prior"]["modis_gaps"] == [d.date().isoformat() for d in MODIS_OUT]
+    assert meta["prior"]["aqua_gaps"] == [d.date().isoformat() for d in AQUA_OUT]
+    assert meta["prior"]["viirs_strips"]["2024-01-31"] and meta["prior"]["strip_deg"] == 10
     assert json.loads((out / "places" / "index.json").read_text())["deg"] == 2  # town names for the map card
     for raw in ("index.html", "sw.js", "manifest.webmanifest"):  # only the processed copies at the site root
         assert not (out / "static" / raw).exists() and (out / raw).exists()

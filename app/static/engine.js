@@ -20,7 +20,14 @@
   // ---------- small numeric helpers (numpy/pandas semantics) ----------
   const isNum = (v) => v != null && Number.isFinite(v);
   const roundEven = (x) => { const f = Math.floor(x), d = x - f; return d > 0.5 ? f + 1 : d < 0.5 ? f : (f % 2 === 0 ? f : f + 1); };
-  const r = (x, nd = 2) => (isNum(x) ? Math.round(x * 10 ** nd) / 10 ** nd : null);
+  // Python's round(x, nd): the nearest value with nd decimals, ties (x·2^(nd+1) an odd integer) to the even digit
+  const r = (x, nd = 2) => {
+    if (!isNum(x)) return null;
+    const y = x * 2 ** (nd + 1);
+    if (!(Number.isInteger(y) && y % 2 !== 0)) return Number(x.toFixed(nd));
+    const lo = Math.floor(x * 10 ** nd);
+    return (lo % 2 === 0 ? lo : lo + 1) / 10 ** nd;
+  };
   const rl = (a, nd = 2) => Array.from(a, (v) => r(v, nd));
   const sum = (a) => a.reduce((s, v) => s + v, 0);
   const nanmean = (a) => { const b = a.filter(isNum); return b.length ? sum(b) / b.length : NaN; };
@@ -78,18 +85,54 @@
 
   function harmonize(S, prior, end) {
     const { days, m, t, v } = S; // v: NaN before VIIRS and on its outage days (see analyze)
-    // outage days have no reference record: left out of every comparison of the sensors (as analysis.py)
+    const mg = S.mg || new Float64Array(days.length); // MODIS cells where VIIRS lost an orbit (data.js)
+    // sensor outages (prior, from pipeline/prior.py), read as analysis.py does: from the sensor that recorded the
+    // day, and left out of every comparison of the sensors
+    const modisOut = new Set(prior.modis_gaps || []), aquaOut = new Set(prior.aqua_gaps || []);
     const gap = Array.from(days, (d, i) => d >= VIIRS_START && !isNum(v[i]));
-    const mf = m.map((x, i) => (gap[i] ? NaN : x)), tf = t.map((x, i) => (gap[i] ? NaN : x));
-    const monthly = monthlySums(days, { m: mf, t: tf, v });
+    const strip = Array.from(days, (d, i) => d >= VIIRS_START && !gap[i] && mg[i] > 0);
+    const aqua = Array.from(days, (d) => aquaOut.has(iso(d)) && !modisOut.has(iso(d)));
+    const mout = Array.from(days, (d) => modisOut.has(iso(d)));
+    const unknown = Array.from(days, (d, i) => mout[i] && (d < VIIRS_START || gap[i]));
+    const out = Array.from(days, (d, i) => gap[i] || strip[i] || aqua[i] || mout[i]);
+    const mf = m.map((x, i) => (out[i] ? NaN : x)), tf = t.map((x, i) => (out[i] ? NaN : x)), vf = v.map((x, i) => (out[i] ? NaN : x));
+    const monthly = monthlySums(days, { m: mf, t: tf, v: vf });
     const ovStart = Date.UTC(2012, 1, 1); // VIIRS_START rolled forward to the next month start
     for (const row of monthly) row.overlap = row.ts >= ovStart && isNum(row.v);
     const [kAll, k] = fitK(monthly, "m", prior.k_world, null);
     const [ktAll, kt] = fitK(monthly, "t", prior.k_terra_world, null);
     const h = new Float64Array(days.length);
     for (let i = 0; i < days.length; i++) {
-      const mo = ymd(days[i])[1];
-      h[i] = days[i] < AQUA_START ? t[i] * kt[mo] : days[i] < VIIRS_START || gap[i] ? m[i] * k[mo] : v[i];
+      const mo = ymd(days[i])[1], modis = aqua[i] ? t[i] * kt[mo] : m[i] * k[mo];
+      h[i] = days[i] < AQUA_START ? t[i] * kt[mo] : days[i] < VIIRS_START || gap[i] ? modis : v[i] + mg[i] * k[mo];
+    }
+    // no usable record: the area's usual fire on that calendar day, scaled to the level of the month's recorded
+    // days (as analysis.py)
+    const scale = {};
+    if (unknown.some(Boolean)) {
+      const key = (i) => { const [, mo, d] = ymd(days[i]); return mo * 32 + (mo === 1 && d === 29 ? 28 : d); };
+      const ymk = (i) => { const [y, mo] = ymd(days[i]); return y * 12 + mo; };
+      const cl = new Map(), rec = new Map(), usual = new Map(), tot = new Map();
+      for (let i = 0; i < days.length; i++) {
+        if (unknown[i]) continue;
+        const a = cl.get(key(i)) || [0, 0]; a[0] += h[i]; a[1]++; cl.set(key(i), a);
+      }
+      const clim = (i) => { const a = cl.get(key(i)); return a ? a[0] / a[1] : 0; };
+      for (let i = 0; i < days.length; i++) {
+        if (unknown[i]) continue;
+        rec.set(ymk(i), (rec.get(ymk(i)) || 0) + h[i]); usual.set(ymk(i), (usual.get(ymk(i)) || 0) + clim(i));
+      }
+      for (let i = 0; i < days.length; i++) {
+        if (!unknown[i]) continue;
+        const r0 = (rec.get(ymk(i)) || 0) / (usual.get(ymk(i)) || 0);
+        h[i] = clim(i) * (Number.isFinite(r0) ? r0 : 1);
+      }
+      for (let i = 0; i < days.length; i++) tot.set(ymk(i), (tot.get(ymk(i)) || 0) + h[i]);
+      for (let i = 0; i < days.length; i++) {
+        if (!unknown[i]) continue;
+        const [y, mo] = ymd(days[i]), recd = rec.get(ymk(i)) || 0;
+        scale[`${y}-${String(mo + 1).padStart(2, "0")}`] = recd > 0 ? r(tot.get(ymk(i)) / recd, 4) : 1.0;
+      }
     }
     const ov = monthly.filter((r) => r.overlap);
     const preds = ov.map((row) => row.m * k[row.mon - 1]);
@@ -103,6 +146,7 @@
     for (let i = 0; i < days.length; i++) {
       const [y, mo] = ymd(days[i]);
       if (y < 2003 || y >= 2012) continue;
+      if (out[i]) continue;
       yA.set(y, (yA.get(y) || 0) + m[i] * k[mo]); yB.set(y, (yB.get(y) || 0) + t[i] * kt[mo]);
     }
     const errs = [...yA.keys()].filter((y) => yA.get(y) > 0).map((y) => (Math.abs(yB.get(y) - yA.get(y)) / yA.get(y)) * 100);
@@ -114,7 +158,12 @@
         k_world: r(prior.k_world, 3), k_terra_world: r(prior.k_terra_world, 3), r2_monthly: r(r2, 3),
         cv, cv_median_ape: cvApe, cv_median_ape_terra: cvApeT,
         terra_check_ape: errs.length ? r(median(errs), 1) : null,
-        viirs_gaps: Array.from(days).filter((d, i) => gap[i]).map(iso), // outage days filled from MODIS
+        // outage days, by how they were read (as analysis.py)
+        viirs_gaps: Array.from(days).filter((d, i) => gap[i] && !unknown[i]).map(iso),
+        viirs_strips: Array.from(days).filter((d, i) => strip[i]).map(iso),
+        terra_only: Array.from(days).filter((d, i) => aqua[i] && (d < VIIRS_START || gap[i]) && !unknown[i]).map(iso),
+        no_record: Array.from(days).filter((d, i) => unknown[i]).map(iso),
+        no_record_scale: scale,
         overlap_viirs_cell_days: r(nOv, 0), low_counts: nOv < MIN_OVERLAP_CELL_DAYS || r2 == null || r2 < MIN_R2 || cvApe == null || cvApe > MAX_CV_ERROR,
         scatter: ov.map((row) => [r(row.m, 1), r(row.v, 1), row.mon]),
         periods: [
@@ -209,7 +258,7 @@
     if (timed.length >= 3) {
       const med = {}; for (const k of ["start_off", "peak_off", "end_off"]) med[k] = median(timed.map((s) => s[k]));
       critical = { start: offLabel(med.start_off), peak: offLabel(med.peak_off), end: offLabel(med.end_off),
-                   length: Math.trunc(med.end_off - med.start_off + 1), start_off: roundEven(med.start_off), peak_off: roundEven(med.peak_off), end_off: roundEven(med.end_off) };
+                   length: roundEven(med.end_off) - roundEven(med.start_off) + 1, start_off: roundEven(med.start_off), peak_off: roundEven(med.peak_off), end_off: roundEven(med.end_off) };
     }
     // four busiest weeks, at least 3 weeks apart (as analysis.py): 7-day sums centred on each day of the mean
     // year, wrapping around New Year; ties go to the earlier date; weeks with fire only
@@ -249,7 +298,7 @@
     for (let i = 0; i < N; i++) days[i] = MODIS_START + i * DAY;
     const v = new Float64Array(N);
     for (let i = 0; i < N; i++) v[i] = days[i] < VIIRS_START ? NaN : 0;
-    return { days, m: new Float64Array(N), t: new Float64Array(N), v, endYear };
+    return { days, m: new Float64Array(N), t: new Float64Array(N), v, mg: new Float64Array(N), endYear };
   }
 
   // ---------- early warning from live counts + harmonized history ----------

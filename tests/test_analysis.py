@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from app.analysis import NeedsData, Store
-from app.constants import AQUA_START, VIIRS_START
+from app.constants import VIIRS_START
 
 RES = pathlib.Path(__file__).resolve().parent.parent / "app" / "resources"
 
@@ -25,9 +25,8 @@ def make_country(root, cid, k=3.0, kt=8.0, seed=0, season=(12, 1, 2), viirs_off=
         m = rng.poisson(m)
         for i in range(m):  # MODIS (Terra+Aqua) cells
             rows.append((d, y0 + i % 5, x0 + i // 5, 0))
-        if d < AQUA_START or d >= VIIRS_START:
-            for i in range(int(round(m * (k / kt if d < AQUA_START else 1)))):
-                rows.append((d, y0 + i % 5, x0 + i // 5, 2))  # Terra-only
+        for i in range(int(round(m * (k / kt if d < VIIRS_START else 1)))):  # Terra's part (kt-scaled before VIIRS)
+            rows.append((d, y0 + i % 5, x0 + i // 5, 2))
         if d >= VIIRS_START and d not in viirs_off:
             for i in range(int(round(m * k))):
                 rows.append((d, y0 + i % 7, x0 + 100 + i // 7, 1))  # VIIRS
@@ -126,6 +125,38 @@ def test_viirs_outage_days_are_filled_from_modis_not_read_as_no_fire(tmp_path):
         assert d["v"][i] is None and d["h"][i] == pytest.approx(d["m"][i] * h["k_month"][g.month - 1], abs=0.02)
 
 
+def test_modis_outages_are_not_read_as_no_fire(store):
+    """No record at all (MODIS out before VIIRS) -> the usual fire of those days, at the level of the month's
+    recorded days; Aqua out -> Terra × k_terra."""
+    from app.analysis import AQUA_OUT, MODIS_OUT
+    res = store.analyze({"country": "Nigeria"})
+    h, d = res["harmonization"], res["daily"]
+    start = pd.Timestamp(d["start"])
+    lost = pd.date_range("2001-06-16", "2001-06-30")
+    assert set(lost.date.astype(str)) <= set(h["no_record"]) and lost.isin(MODIS_OUT).all()
+    june = [d["h"][(day - start).days] for day in pd.date_range("2001-06-01", "2001-06-30")]
+    seen = [x for day, x in zip(pd.date_range("2001-06-01", "2001-06-30"), june) if day not in MODIS_OUT]
+    filled = [x for day, x in zip(pd.date_range("2001-06-01", "2001-06-30"), june) if day in MODIS_OUT]
+    assert np.mean(filled) == pytest.approx(np.mean(seen), rel=0.5)  # a steady month: about the recorded days' rate
+    assert h["no_record_scale"]["2001-06"] == pytest.approx(sum(june) / sum(seen), rel=1e-3)
+    series, *_ = store.series({"country": "Nigeria"})
+    for day in AQUA_OUT[AQUA_OUT < VIIRS_START]:
+        i = (day - start).days
+        assert day.date().isoformat() in h["terra_only"]
+        assert d["h"][i] == pytest.approx(h["k_terra_month"][day.month - 1] * series.t.loc[day], abs=0.01)
+
+
+def test_lost_viirs_orbit_is_filled_from_modis_in_that_strip(tmp_path):
+    """2024-01-31: VIIRS lost the orbit over West Africa (prior.json viirs_strips); Nigeria's synthetic fires lie in it."""
+    make_country(tmp_path, "Nigeria", viirs_off=[pd.Timestamp("2024-01-31")])
+    res = Store(tmp_path, RES).analyze({"country": "Nigeria"})
+    h, d = res["harmonization"], res["daily"]
+    i = (pd.Timestamp("2024-01-31") - pd.Timestamp(d["start"])).days
+    assert "2024-01-31" in h["viirs_strips"] and d["m"][i] > 0
+    assert d["h"][i] == pytest.approx(d["m"][i] * h["k_month"][0], abs=0.02)
+    assert h["k_all"] == pytest.approx(3.0, rel=0.03)
+
+
 def test_highest_risk_weeks_wrap_around_new_year_and_have_fire(store):
     weeks = [pd.to_datetime(f"{w} 2001", format="%d %b %Y") for w in store.analyze({"country": "Nigeria"})["top_weeks"]]
     assert weeks
@@ -142,6 +173,15 @@ def test_live_week_starting_on_29_february_is_compared_with_every_year(store):
     out = store.nowcast(nrt, {"country": "Nigeria"})
     assert out["days"][0] == "2028-02-29" and len(out["days"]) == 6
     assert out["n_years"] == 24  # 2001–2024, not only the leap years
+
+
+def test_live_week_without_fires_in_a_box_with_industrial_heat(tmp_path):
+    make_country(tmp_path, "Nigeria")
+    pd.DataFrame({"yi": [90], "xi": [80]}).astype("int16").to_parquet(tmp_path / "countries" / "Nigeria" / "static_cells.parquet")
+    days = pd.date_range("2025-03-01", "2025-03-08")
+    nrt = pd.DataFrame({"d": days, "yi": 0, "xi": 0, "n": 1, "frp": 1.0})  # every live fire is far from the box
+    out = Store(tmp_path, RES).nowcast(nrt, {"bbox": [8.4, 8.8, 8.9, 9.3]})
+    assert out["available"] and out["total"] == 0 and out["static_cells_masked"] == 1
 
 
 def test_map_layers_average_over_the_years_that_hold_each_month():

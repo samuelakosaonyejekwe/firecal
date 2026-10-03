@@ -100,6 +100,15 @@ def test_disabled_watcher_and_world_build_are_switched_back_on(world):
     assert all(v == "active" for v in world["workflows"].values())
 
 
+def test_every_paused_workflow_is_switched_back_on(world):
+    # including the guardian: if GitHub paused it, the watcher would be the only chain left
+    for wf in (keeper.WORKFLOW, keeper.WATCHER, keeper.WORLD, keeper.GUARD):
+        world["workflows"][wf] = "disabled_inactivity"
+    msg, _ = keeper.check_once()
+    assert world["enabled"] == 4 and "guardian schedule" in msg
+    assert all(v == "active" for v in world["workflows"].values())
+
+
 def test_stopped_cloud_watcher_is_restarted_once(world):
     world["watcher"] = False
     msg, _ = keeper.check_once()
@@ -162,3 +171,9 @@ def test_stopped_guardian_is_restarted_once(world):
     assert world["guards_started"] == 1 and "guardian" in msg and world["dispatched"] == 0
     keeper.check_once()
     assert world["guards_started"] == 1
+
+
+def test_a_workflow_the_owner_disabled_stays_off(world):
+    world["workflows"][keeper.WORLD] = "disabled_manually"
+    keeper.check_once()
+    assert world["enabled"] == 0 and world["workflows"][keeper.WORLD] == "disabled_manually"

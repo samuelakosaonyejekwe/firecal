@@ -1,16 +1,15 @@
 # The guardian: a second self-renewing chain, independent of GitHub's schedule (which drops most scheduled runs).
-# Every 10 minutes it makes sure the live-fire watcher (live.yml) is running and that GitHub hasn't paused any
-# workflow; after ~5.5 hours it starts its own successor and ends. The watcher does the same for the guardian
-# (pipeline/keeper.py), so the two keep each other alive: both would have to stop at once to need a schedule.
-# Plain shell only (no packages to install, nothing that can break between runs).
+# Every 10 minutes it makes sure the live-fire watcher (live.yml) is running and that GitHub hasn't paused a
+# workflow for inactivity; after ~5.5 hours it starts its own successor and ends. The watcher does the same for the
+# guardian (pipeline/keeper.py), so the two keep each other alive: both would have to stop at once to need a schedule.
+# Plain shell only (no packages to install). Never fails: problems are reported as warnings.
 # Runs as the owner via the FIRECAL_PUBLISH_TOKEN secret (fine-grained, this repository only).
 name: Guard the live-fire watcher
 
 on:
   workflow_dispatch:
   schedule:
-    # a last-resort restart if both chains ever stopped; while a guardian runs, this run ends at once (job "needed")
-    - cron: "23 */3 * * *"
+    - cron: "23 */3 * * *"   # a last-resort restart; while a guardian runs it ends at once (job "needed")
 
 permissions:
   contents: read
@@ -23,26 +22,35 @@ defaults:
 jobs:
   needed:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
       run: ${{ steps.check.outputs.run }}
     steps:
       - name: Is a guardian already running?
         id: check
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
+          WORKFLOW: guard.yml
         run: |
-          others=0
-          if [ "$EVENT" = "schedule" ]; then
-            others=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow guard.yml --limit 20 --json databaseId,status \
-                     --jq "[.[] | select(.databaseId != $GITHUB_RUN_ID and .status != \"completed\")] | length" || echo 0)
-          fi
-          if [ "$others" = "0" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; echo "a guardian is already running"; fi
+          # One chain at a time. A hand-over overlaps for a moment (the previous run is still finishing), so wait up to 5
+          # minutes for older runs; one still working after that means this run is a second chain: it ends here and doesn't
+          # hand over. A scheduled run (a last-resort restart) doesn't wait. If GitHub can't list runs, go ahead.
+          run=true
+          if [ "$EVENT" = "schedule" ]; then end=$(date +%s); else end=$(( $(date +%s) + 300 )); fi
+          while :; do
+            older=$(timeout 60 gh run list --repo "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" --limit 20 --json databaseId,status \
+                    --jq "[.[] | select(.databaseId < $GITHUB_RUN_ID and .status != \"completed\")] | length") || { echo "couldn't list runs; going ahead"; older=0; }
+            [ "$older" = "0" ] && break
+            if [ "$(date +%s)" -ge "$end" ]; then run=false; echo "an older run is still working; this one ends here"; break; fi
+            sleep 20
+          done
+          echo "run=$run" >> "$GITHUB_OUTPUT"
 
   guard:
     needs: needed
-    if: needs.needed.outputs.run == 'true'
+    if: needs.needed.outputs.run != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 345
     env:
@@ -51,48 +59,68 @@ jobs:
       - name: Check the publishing key
         id: key
         continue-on-error: true   # reported here; without a key nothing below can work
+        env:
+          WHAT: "the guardian can't run."
         run: |
-          if [ -z "$GH_TOKEN" ]; then echo "::error::The FIRECAL_PUBLISH_TOKEN secret is missing; the guardian can't run."; exit 1; fi
-          if ! gh release view firecal-data --repo "$GITHUB_REPOSITORY" > /dev/null 2> key.err && ! grep -qi "not found" key.err; then
-            echo "::error::GitHub rejected the FIRECAL_PUBLISH_TOKEN secret (expired or revoked?): $(cat key.err)"; exit 1
-          fi
-          # when the key expires (GitHub reports it on every call): logged on every run, a warning a month ahead
-          exp=$(gh api -i "repos/$GITHUB_REPOSITORY" 2>/dev/null | tr -d '\r' | sed -n 's/^[Gg]ithub-[Aa]uthentication-[Tt]oken-[Ee]xpiration: //p')
+          if [ -z "$GH_TOKEN" ]; then echo "::error::The FIRECAL_PUBLISH_TOKEN secret is missing; $WHAT"; exit 1; fi
+          # a real call, retried through GitHub hiccups: only a 401/403 means the key itself was rejected
+          # ("release not found" is a fine first run)
+          ok=""; out=""
+          for wait in 10 30 60 0; do
+            if out=$(timeout 60 gh release view firecal-data --repo "$GITHUB_REPOSITORY" --json tagName 2>&1); then ok=1; break; fi
+            if printf '%s' "$out" | grep -qi "not found"; then ok=1; break; fi
+            if printf '%s' "$out" | grep -qiE "HTTP 40[13]|bad credentials|resource not accessible"; then
+              echo "::error::GitHub rejected the FIRECAL_PUBLISH_TOKEN secret (expired or revoked?): $out"; exit 1
+            fi
+            [ "$wait" = 0 ] && break
+            sleep "$wait"
+          done
+          [ -n "$ok" ] || echo "::warning::GitHub didn't answer the key check ($out); going ahead"
+          # when the key expires (GitHub reports it on every call): logged on every run, a warning a month ahead; never fails
+          exp=$(timeout 60 gh api -i "repos/$GITHUB_REPOSITORY" 2>/dev/null | tr -d '\r' | sed -n 's/^[Gg]ithub-[Aa]uthentication-[Tt]oken-[Ee]xpiration: //p' || true)
           if [ -z "$exp" ]; then
-            echo "publishing key: no expiry date"
-          else
-            days=$(( ($(date -d "$exp" +%s) - $(date +%s)) / 86400 ))
+            echo "publishing key: no expiry date reported"
+          elif t=$(date -d "$exp" +%s 2>/dev/null); then
+            days=$(( (t - $(date +%s)) / 86400 ))
             echo "publishing key expires $exp ($days days left)"
             if [ "$days" -lt 30 ]; then
               echo "::warning::The FIRECAL_PUBLISH_TOKEN key expires on $exp ($days days left): renew it on GitHub (Settings > Developer settings > Fine-grained tokens) and update the repository secret"
             fi
+          else
+            echo "publishing key expiry not readable: $exp"
           fi
-      - name: Keep the watcher running (every 10 minutes for ~5.5 hours)
+      - name: Keep the watcher running (every 10 minutes for ~5.3 hours)
         if: steps.key.outcome == 'success'
         continue-on-error: true
+        timeout-minutes: 325
         run: |
           active() {  # runs of a workflow that are queued or running (a failed lookup counts as "running": do nothing)
-            gh run list --repo "$GITHUB_REPOSITORY" --workflow "$1" --limit 10 --json status \
+            timeout 60 gh run list --repo "$GITHUB_REPOSITORY" --workflow "$1" --limit 10 --json status \
               --jq '[.[] | select(.status != "completed")] | length' 2>/dev/null || echo 1
           }
-          end=$(( $(date +%s) + 330 * 60 ))
-          while [ "$(date +%s)" -lt "$end" ]; do
-            for wf in live.yml guard.yml pages.yml world.yml; do  # GitHub pauses scheduled workflows after 60 quiet days
-              state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf" --jq .state 2>/dev/null || echo active)
-              if [ "$state" != "active" ]; then gh workflow enable "$wf" --repo "$GITHUB_REPOSITORY" && echo "$(date -u +%H:%M) re-enabled $wf (was $state)"; fi
+          end=$(( $(date +%s) + 320 * 60 ))
+          while :; do
+            for wf in live.yml guard.yml pages.yml world.yml; do
+              # GitHub pauses scheduled workflows after 60 quiet days ("disabled_inactivity"); one you disabled stays off
+              state=$(timeout 60 gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf" --jq .state 2>/dev/null || echo active)
+              if [ "$state" = "disabled_inactivity" ]; then
+                timeout 60 gh workflow enable "$wf" --repo "$GITHUB_REPOSITORY" && echo "$(date -u +%H:%M) re-enabled $wf (paused by GitHub)" || true
+              fi
             done
             if [ "$(active live.yml)" = "0" ]; then
-              gh workflow run live.yml --repo "$GITHUB_REPOSITORY" && echo "$(date -u +%H:%M) the watcher was not running; started it"
+              timeout 60 gh workflow run live.yml --repo "$GITHUB_REPOSITORY" && echo "$(date -u +%H:%M) the watcher was not running; started it" || true
             fi
-            sleep 600
+            left=$(( end - $(date +%s) ))
+            [ "$left" -le 0 ] && break
+            sleep $(( left < 600 ? left : 600 ))
           done
       - name: Hand over to the next guardian
-        # always, unless you cancel this run; GitHub API hiccups are retried for several minutes
+        # always, unless you cancel this run; GitHub API hiccups are retried for a few minutes
         if: ${{ !cancelled() && steps.key.outcome == 'success' }}
         continue-on-error: true
         run: |
-          for wait in 30 60 120 240 0; do
-            gh workflow run guard.yml --repo "$GITHUB_REPOSITORY" && echo "next guardian started" && exit 0
+          for wait in 20 40 80 0; do
+            timeout 60 gh workflow run guard.yml --repo "$GITHUB_REPOSITORY" && echo "next guardian started" && exit 0
             [ "$wait" = 0 ] && break
             echo "GitHub didn't accept the hand-over; trying again in $wait s"; sleep "$wait"
           done

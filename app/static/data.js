@@ -22,6 +22,7 @@
         if (!r.ok) throw new HttpError(r.status, body);
         return body;
       } catch (e) {
+        if (e.name === "AbortError") throw e;  // superseded by a newer request: no retry
         if (!navigator.onLine && !(e instanceof HttpError))  // airplane mode, and this file isn't saved on the device
           throw new Error("you're offline and this hasn't been saved on this device yet. Reconnect, or next time use Install → Save all countries for offline before going offline");
         if (i + 1 >= tries || (e instanceof HttpError && e.status < 500)) throw e;
@@ -58,11 +59,11 @@
     calendar: (a) => fetchJSON(`api/calendar?${aoiQuery(a)}`),
     prefetch() {}, // the local server answers in milliseconds
     nowcast: (a) => fetchJSON(`api/nowcast?${aoiQuery(a)}`, {}, 2),
-    grid: (bbox, year, month) => {
+    grid: (bbox, year, month, zoom, signal) => { // `signal`: cancels a layer the map no longer needs
       const q = new URLSearchParams({ bbox: bbox.join(",") });
       if (year) q.set("year", year);
       if (month) q.set("month", month);
-      return fetchJSON(`api/grid?${q}`);
+      return fetchJSON(`api/grid?${q}`, { signal });
     },
     live: (bbox) => fetchJSON(`api/live?bbox=${bbox.join(",")}`),
     locate: (lon, lat) => fetchJSON(`api/locate?lon=${lon}&lat=${lat}`),
@@ -116,6 +117,11 @@
     const endYear = +META.range.end.slice(0, 4);
     const S = FireEngine.series(endYear);
     const arrs = [S.m, S.v, S.t];
+    // VIIRS outage strips (a lost orbit: a band of longitude on one day, META.prior.viirs_strips): VIIRS there is a
+    // partial record and is dropped; MODIS there stands in for it (S.mg), as on the server (analysis.SENSOR_SQL)
+    const P = META.prior, band = (P.strip_deg || 10) * CELL, strips = new Map();
+    for (const [d, bands] of Object.entries(P.viirs_strips || {}))
+      strips.set(Math.round((Date.parse(d + "T00:00:00Z") - FireEngine.constants.MODIS_START) / FireEngine.DAY), new Set(bands));
     let done = 0, bytes = 0;
     onProgress?.(0, wanted.length, 0, total);
     await pool(wanted, 6, async ([ty, tx]) => {
@@ -131,7 +137,11 @@
         for (let i = 0; i < n; i++) {
           day += days[i];
           const yi = ty * T + Math.floor(cells[i] / T), xi = tx * T + (cells[i] % T);
-          if (yi >= y0 && yi <= y1 && xi >= x0 && xi <= x1 && day < arr.length) arr[day] += 1;
+          if (!(yi >= y0 && yi <= y1 && xi >= x0 && xi <= x1 && day < arr.length)) continue;
+          const lost = s < 2 && strips.get(day)?.has(Math.floor(xi / band));
+          if (lost && s === 1) continue;
+          arr[day] += 1;
+          if (lost) S.mg[day] += 1;
         }
       }
       done++; bytes += idx.tiles[`${ty}_${tx}`];
@@ -203,8 +213,10 @@
     await checkNasa();
   }
 
+  // the published live meta, read once at start-up (by meta() and liveSource alike); recheck() reads it afresh
+  const publishedLive = () => once("livemeta", () => fetchJSON("data/live/meta.json", { cache: "no-cache" }, 2).catch(() => null));
   const liveSource = () => direct ? Promise.resolve(direct) : once("livesrc", async () => {
-    published = await fetchJSON("data/live/meta.json", { cache: "no-cache" }, 2).catch(() => null);
+    published = await publishedLive();
     if (!timer) timer = setInterval(() => { if (document.visibilityState !== "hidden") recheck(); }, RECHECK_MS);
     if (published) { checkNasa(); return { meta: published, direct: false }; }
     // nothing published yet: read NASA's 7-day file directly
@@ -248,10 +260,10 @@
     mode: "static",
     maxBoxDeg2: Infinity, // set from data/meta.json
     async meta() {
+      const live = publishedLive(); // at the same time, not after
       META = await fetchJSON("data/meta.json", { cache: "no-cache" });
       this.maxBoxDeg2 = META.max_box_deg2;
-      const live = await fetchJSON("data/live/meta.json", { cache: "no-cache" }, 2).catch(() => null);
-      return { ...META, live };
+      return { ...META, live: await live };
     },
     async calendar(a, onProgress) {
       const c = a.country && META.countries.find((x) => x.id === a.country);

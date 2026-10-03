@@ -34,7 +34,6 @@ RES = pathlib.Path(__file__).resolve().parent.parent / "app" / "resources"
 OUT = RES / "places"
 DEG = 2
 KM, MAX_KM, MAX_PULL, GRID = 111.2, 250, 2.1, 33  # km per degree, farthest answer, largest pull, samples per tile side
-PER_SQUARE = 2  # FireCal's squares are 0.1°: their two biggest towns are enough to name them
 # GeoNames country names that FireCal spells differently (countries.json): the card compares them
 FIRECAL_NAME = {"CV": "Cape Verde", "CI": "Côte d'Ivoire", "CZ": "Czech Republic", "NL": "Netherlands",
                 "PS": "Palestine", "GM": "The Gambia"}
@@ -69,10 +68,6 @@ def main():
     rows = []
     for f in lines(cities):
         rows.append((f[1], float(f[4]), float(f[5]), regions.get(f"{f[8]}.{f[10]}", ""), f[8], int(f[14] or 0)))
-    squares = {}
-    for r in sorted(rows, key=lambda r: -r[5]):  # biggest first; dense areas keep their main towns, sparse ones all
-        squares.setdefault((math.floor(r[1] * 10), math.floor(r[2] * 10)), []).append(r)
-    rows = [r for sq in squares.values() for r in sq[:PER_SQUARE]]
     lat, lon = np.array([r[1] for r in rows]), np.array([r[2] for r in rows])
     pull = 1 + 0.25 * np.log10(np.maximum([r[5] for r in rows], 1000) / 1000)
     ny, nx = 180 // DEG, 360 // DEG

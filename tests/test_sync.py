@@ -226,3 +226,38 @@ def test_publishing_needs_write_access(monkeypatch, permission, rest, can_publis
     monkeypatch.setattr(sync.shutil, "which", lambda name: "/usr/bin/gh")
     monkeypatch.setattr(sync, "gh", lambda *a, **k: json.dumps(rest) if a[0] == "api" else json.dumps({"viewerPermission": permission}))
     assert sync.github_available() is can_publish
+
+
+def test_public_store_reads_the_release_over_https(env, monkeypatch):
+    """The real read-only path: the release's API answer is mapped to gh's fields and assets download by URL."""
+    import io
+    import urllib.error
+    fake, root, _ = env
+    api = {"assets": [{"name": "Chad.grid_daily.parquet", "size": 9, "updated_at": "2026-01-02T03:04:05Z",
+                       "browser_download_url": "https://example.test/Chad.grid_daily.parquet"},
+                      {"name": "unavailable.json", "size": 30, "updated_at": "2026-01-02T03:04:05Z",
+                       "browser_download_url": "https://example.test/unavailable.json"}]}
+    files = {"https://example.test/Chad.grid_daily.parquet": b"published",
+             "https://example.test/unavailable.json": b'{"Tokelau": "no VIIRS archive"}'}
+    seen = []
+
+    def urlopen(req, timeout=None):
+        url = req if isinstance(req, str) else req.full_url
+        seen.append(url)
+        if url.endswith(f"/releases/tags/{sync.RELEASE}"):
+            return io.BytesIO(json.dumps(api).encode())
+        return io.BytesIO(files[url])
+    monkeypatch.setattr(sync.urllib.request, "urlopen", urlopen)
+    store = sync.PublicStore()
+    assert store.exists and not store.can_write
+    assert store.assets["Chad.grid_daily.parquet"]["updatedAt"] == "2026-01-02T03:04:05Z"
+    assert store.unavailable() == {"Tokelau": "no VIIRS archive"}
+    store.download("Chad")
+    assert (root / "Chad" / "grid_daily.parquet").read_bytes() == b"published"
+    assert seen[0].startswith("https://api.github.com/repos/")
+
+    def missing(req, timeout=None):
+        raise urllib.error.HTTPError(getattr(req, "full_url", req), 404, "Not Found", None, None)
+    monkeypatch.setattr(sync.urllib.request, "urlopen", missing)
+    empty = sync.PublicStore()  # no release yet: an empty store, not an error
+    assert not empty.exists and empty.assets == {} and empty.unavailable() == {}

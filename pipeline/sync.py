@@ -43,8 +43,12 @@ PERMANENT = ("no VIIRS archive", "has no MODIS archive")  # failures that retryi
 TRANSIENT = ("HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504", "timeout", "connection reset", "EOF")
 
 
-def gh(*args, waits=(5, 20, 60), timeout=1800) -> str:
+GH_TIMEOUT = int(os.environ.get("FIRECAL_GH_TIMEOUT", "1800"))  # seconds per call (the cloud watcher sets 90)
+
+
+def gh(*args, waits=(5, 20, 60), timeout=None) -> str:
     """Run `gh`; GitHub's API sometimes fails for a moment (5xx, timeouts), so those are retried."""
+    timeout = timeout or GH_TIMEOUT
     for wait in (*waits, None):
         try:
             return subprocess.run(["gh", *args], cwd=ROOT, check=True, text=True, capture_output=True, timeout=timeout).stdout

@@ -23,15 +23,21 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        id: co
+        continue-on-error: true
         with:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        id: py
+        if: steps.co.outcome == 'success'
+        continue-on-error: true
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements-dev.txt
       - name: Install
         id: install
+        if: steps.py.outcome == 'success'
         continue-on-error: true
         run: for i in 1 2 3; do pip install -r requirements-dev.txt && break; [ "$i" = 3 ] && exit 1; sleep $((i * 20)); done
       - name: Tests
@@ -54,23 +60,28 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        id: co
+        continue-on-error: true
         with:
           persist-credentials: false
       - name: Build image
         id: build
+        if: steps.co.outcome == 'success'
         continue-on-error: true
         run: |
           # the build downloads Python packages: a network hiccup is retried
           for i in 1 2 3; do docker build -t firecal:ci . && break; [ "$i" = 3 ] && exit 1; sleep $((i * 30)); done
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        id: py
         if: steps.build.outcome == 'success'
+        continue-on-error: true
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements-dev.txt
       - name: Synthetic country for the smoke test
         id: data
-        if: steps.build.outcome == 'success'
+        if: steps.py.outcome == 'success'
         continue-on-error: true
         run: |
           for i in 1 2 3; do pip install -r requirements-dev.txt && break; [ "$i" = 3 ] && exit 1; sleep $((i * 20)); done

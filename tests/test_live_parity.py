@@ -118,6 +118,8 @@ def test_nasa_unreachable_keeps_the_published_live_files(tmp_path, monkeypatch):
     got, want = tmp_path / "site" / "data" / "live", published / "data" / "live"
     names = sorted(p.relative_to(want).as_posix() for p in want.rglob("*.json") if p.name != "static_cells.json")
     assert names and all(json.loads((got / n).read_text()) == json.loads((want / n).read_text()) for n in names)
+    # the website workflow is told, so it doesn't remember this state as published (it retries when NASA is back)
+    assert "no NASA FIRMS server answered" in (build / "live_kept").read_text()
 
 
 MERGE_RUNNER = """

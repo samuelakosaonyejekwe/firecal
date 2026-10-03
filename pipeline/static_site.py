@@ -31,7 +31,7 @@ import numpy as np
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from app.analysis import VIIRS_GAPS, Store, layer_years, vequiv_sql  # noqa: E402
+from app.analysis import AQUA_OUT, MODIS_OUT, OUTAGES, VIIRS_GAPS, Store, layer_years, vequiv_sql  # noqa: E402
 from app.constants import (BOX_TILE as TILE, CELL, MAP_TILE, MODIS_START, OVERVIEW,  # noqa: E402
                            VIIRS_START, WEB_MAX_BOX_DEG2)
 
@@ -169,6 +169,14 @@ def build_own_cells(out: pathlib.Path, build: pathlib.Path):
     print(f"  own cells outside borders: {sum(map(len, own.values())) // 2} in {len(own)} countries", flush=True)
 
 
+def outages_for_browser() -> dict:
+    """The sensor outages (app/analysis.py) as app/static/engine.js and data.js read them."""
+    iso = lambda ix: [d.date().isoformat() for d in ix]  # noqa: E731
+    return {"viirs_gaps": iso(VIIRS_GAPS), "strip_deg": OUTAGES["strip_deg"],
+            "viirs_strips": {d.date().isoformat(): b for d, b in sorted(OUTAGES["viirs_strips"].items())},
+            "modis_gaps": iso(MODIS_OUT), "aqua_gaps": iso(AQUA_OUT)}
+
+
 def build_map_layers(store: Store, out: pathlib.Path, build: pathlib.Path):
     """History layers: all years, each year, each calendar month (mean per year).
 
@@ -182,7 +190,7 @@ def build_map_layers(store: Store, out: pathlib.Path, build: pathlib.Path):
         k, kt = h["k_all"] or 1.0, h["k_terra_all"] or 1.0
         con.execute(f"""
             INSERT INTO cm SELECT '{cid}', year(d), month(d), xi, yi,
-                   sum({vequiv_sql(k, kt)}) AS val
+                   sum({vequiv_sql(k, kt, h["no_record_scale"])}) AS val
             FROM '{store.path(cid).as_posix()}' WHERE d <= DATE '{store.end.date()}'  -- the record's end (analysis.Store.end)
             GROUP BY ALL HAVING val > 0""")
     # multi-year layers: mean per year over the years that hold the month, or the record's length (as the server)
@@ -229,8 +237,8 @@ def build_meta(store: Store, out: pathlib.Path, version: str):
                       for c in sorted(store.meta.values(), key=lambda c: c["name"])],
         "range": {"start": MODIS_START.date().isoformat(), "end": store.end.date().isoformat(),
                   "viirs_start": VIIRS_START.date().isoformat()},
-        # the browser engine analyzes drawn boxes with the same prior and VIIRS outage days as the server
-        "prior": {"k_world": pm, "k_terra_world": pt, "viirs_gaps": [d.date().isoformat() for d in VIIRS_GAPS]},
+        # the browser engine analyzes drawn boxes with the same prior and sensor outages as the server
+        "prior": {"k_world": pm, "k_terra_world": pt, **outages_for_browser()},
         "max_box_deg2": WEB_MAX_BOX_DEG2, "jobs": {},
     })
 

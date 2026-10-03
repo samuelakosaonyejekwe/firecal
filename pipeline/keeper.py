@@ -107,11 +107,11 @@ def ensure_guard() -> str | None:
 
 def ensure_schedule_enabled() -> str | None:
     """GitHub disables scheduled workflows after 60 days without repository activity, and a disabled workflow
-    can't be started at all; switch the website build, the watcher and the world build back on."""
+    can't be started at all; switch them back on. A workflow the owner disabled on purpose stays off."""
     notes = []
     for wf, what in ((WORKFLOW, "website"), (WATCHER, "watcher"), (WORLD, "world build"), (GUARD, "guardian")):
         state = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/actions/workflows/{wf}"))["state"]
-        if state != "active":
+        if state == "disabled_inactivity":
             gh("workflow", "enable", wf)
             notes.append(f"{what} schedule was {state}; re-enabled it")
     return "; ".join(notes) or None

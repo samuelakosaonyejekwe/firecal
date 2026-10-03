@@ -4,17 +4,28 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 PORT="${PORT:-8765}"
-if curl -fs "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1; then
-  echo "FireCal is already running: http://127.0.0.1:${PORT}"
-  exit 0
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || { echo "FireCal needs Python 3.11 or newer"; exit 1; }
+# a server already running this checkout's code is left alone; one running older code is restarted
+if health=$(curl -fs "http://127.0.0.1:${PORT}/api/health" 2>/dev/null); then
+  if printf '%s' "$health" | grep -q "\"build\":\"$(python3 app/fingerprint.py)\""; then
+    echo "FireCal is already running: http://127.0.0.1:${PORT}"
+    exit 0
+  fi
+  echo "FireCal has changed since the server started: restarting it"
+  ./stop.sh >/dev/null
 fi
-# the environment follows requirements.txt: set up on the first run, reinstalled whenever the file changes
-want=$(sha1sum requirements.txt | cut -c1-40)
+# the environment follows the requirements: set up on the first run, and rebuilt from scratch whenever they change
+# (so packages that were dropped don't linger); a git checkout also gets the test tools (requirements-dev.txt)
+reqs=requirements.txt; [ -d .git ] && reqs=requirements-dev.txt
+want=$(cat requirements.txt "$reqs" | sha1sum | cut -c1-40)
 if [ ! -x .venv/bin/uvicorn ] || [ "$(cat .venv/.requirements 2>/dev/null)" != "$want" ]; then
-  python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || { echo "FireCal needs Python 3.11 or newer"; exit 1; }
   echo "Setting up the Python environment…"
-  [ -x .venv/bin/python ] || python3 -m venv .venv
-  .venv/bin/pip install -q -r requirements.txt && echo "$want" > .venv/.requirements
+  rm -rf .venv.new && python3 -m venv .venv.new
+  .venv.new/bin/pip install -q -r "$reqs"
+  rm -rf .venv && mv .venv.new .venv
+  # (a venv's scripts name its folder: point them at the final one)
+  grep -rl "\.venv\.new" .venv/bin 2>/dev/null | xargs -r sed -i "s#$(pwd -P)/\.venv\.new#$(pwd -P)/.venv#g"
+  echo "$want" > .venv/.requirements
 fi
 mkdir -p data
 # keep the log from growing forever: roll it over past 5 MB (one previous copy is kept)
