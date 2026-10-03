@@ -14,14 +14,16 @@ const FONTS = "firecal-fonts-v1";
 const BASE = new URL(self.registration.scope).pathname; // e.g. "/" or "/firecal/"
 
 const STATIC_FILES = ["styles.css", "app.js", "data.js", "engine.js", "geo.js", "live.js", "vendor/echarts.min.js"];
-const SHELL_URLS = ["./", "manifest.webmanifest", "world.geojson", "shapes.geojson",
-  ...STATIC_FILES.map((f) => `static/${f}?v=${VERSION}`),
+const ESSENTIAL = ["./", ...STATIC_FILES.map((f) => `static/${f}?v=${VERSION}`)]; // the page and its code
+const SHELL_URLS = [...ESSENTIAL, "manifest.webmanifest", "world.geojson", "shapes.geojson",
   "static/icon.svg", "static/icon-192.png", "static/icon-512.png", "static/icon-maskable-512.png", "static/apple-touch-icon.png", "static/favicon-32.png"];
 const DATA_URLS = ["data/meta.json", "data/map/all/overview.json", "data/live/meta.json", "data/live/overview.json",
                    "data/live/tiles/index.json", "data/own_cells.json", "data/live/static_cells.json"];
 const LIB_URLS = ["https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js",
                   "https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css"];
 const FONT_CSS = "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap";
+
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function worldTiles() { // the base map of the whole world down to zoom 3 (85 small tiles per theme)
   const out = [];
@@ -52,11 +54,43 @@ async function saveFonts() { // the font stylesheet and the font files it points
   } catch (_) { /* offline fonts fall back to the system font */ }
 }
 
+// The page and its code, retried over a shaky connection. A new version always installs (an old worker must never
+// stay in charge just because one download failed), but the previous saved copy is removed only once this one is
+// complete, so there is always a full copy to open offline.
+async function saveEssential() {
+  const shell = await caches.open(SHELL);
+  for (const wait of [0, 1000, 3000]) {
+    if (wait) await pause(wait);
+    await Promise.allSettled(ESSENTIAL.map(async (u) => {
+      if (await shell.match(u)) return;
+      const res = await fetch(u, { cache: "no-cache" });
+      if (res.ok) await shell.put(u, res);
+    }));
+    if (await shellComplete()) return;
+  }
+}
+async function shellComplete() {
+  const shell = await caches.open(SHELL);
+  return (await Promise.all(ESSENTIAL.map((u) => shell.match(u)))).every(Boolean);
+}
+// Saved copies, newest first: this version's, then any earlier one still kept (see above). Other apps on the same
+// web address share this storage and may have deleted ours, so a miss is normal and handled by the callers.
+async function fromShells(req, opts) {
+  const older = (await caches.keys()).filter((k) => k.startsWith("firecal-shell-") && k !== SHELL);
+  for (const name of [SHELL, ...older]) {
+    const hit = await (await caches.open(name)).match(req, opts);
+    if (hit) return hit;
+  }
+}
+
 self.addEventListener("install", (e) => {
+  self.skipWaiting(); // a new version always takes over: installing never waits on, or fails because of, saving
   e.waitUntil((async () => {
-    await saveAll(SHELL, SHELL_URLS);                      // the app itself
-    await Promise.allSettled([saveAll(DATA, DATA_URLS), saveAll(LIBS, LIB_URLS), saveFonts()]);
-    await self.skipWaiting();
+    try {
+      await saveAll(SHELL, SHELL_URLS);                    // the app itself
+      await saveEssential();
+      await Promise.allSettled([saveAll(DATA, DATA_URLS), saveAll(LIBS, LIB_URLS), saveFonts()]);
+    } catch (_) { /* storage refused or unavailable (e.g. a full disk): the app still works online */ }
     // in the background, and not on Data Saver or 2G (those tiles are still saved as the map shows them)
     const net = self.navigator.connection;
     if (!(net?.saveData || /2g/.test(net?.effectiveType || ""))) saveAll(TILES, worldTiles(), { skipCached: true });
@@ -64,8 +98,15 @@ self.addEventListener("install", (e) => {
 });
 
 self.addEventListener("activate", (e) => {
-  e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k.startsWith("firecal-shell-") && k !== SHELL).map((k) => caches.delete(k))))
-    .then(() => self.clients.claim()));
+  e.waitUntil((async () => {
+    if (await shellComplete()) {
+      const keys = await caches.keys();
+      await Promise.all(keys.filter((k) => k.startsWith("firecal-shell-") && k !== SHELL).map((k) => caches.delete(k)));
+    }
+    // earlier versions turned navigation preload on; pages now open without this worker while online
+    try { await self.registration.navigationPreload?.disable(); } catch (_) { /* not supported: no change */ }
+    await self.clients.claim();
+  })());
 });
 
 // the page asks for everything to be saved for offline use; progress is reported back to it
@@ -103,6 +144,14 @@ async function networkFirst(req, cacheName) {
   }
 }
 
+async function appFile(req) { // versioned code and styles: from any saved copy, else the network (and saved)
+  const hit = await fromShells(req);
+  if (hit) return hit;
+  const res = await fetch(req);
+  if (res.ok) { const copy = res.clone(); caches.open(SHELL).then((c) => c.put(req, copy)).catch(() => {}); }
+  return res;
+}
+
 async function cacheFirst(req, cacheName) {
   const cache = await caches.open(cacheName);
   const hit = await cache.match(req);
@@ -120,35 +169,73 @@ async function staleWhileRevalidate(req, cacheName, event) {
   return update;
 }
 
-async function page(req) { // the app page: fresh when online, the saved copy offline (any #hash or ?query)
+async function pageFromNetwork(e) {
+  try { const pre = await e.preloadResponse; if (pre) return pre; } catch (_) { /* fall through to a normal request */ }
+  try { return await fetch(e.request); }
+  catch (_) { await pause(800); return fetch(e.request); } // a brief blip (Wi-Fi hiccup, network change, waking up)
+}
+
+// Shown only when the network is down and nothing was saved yet: it says what is going on and reloads by itself
+// once FireCal answers again, instead of the browser's "This site can't be reached" (ERR_FAILED) page.
+const RECONNECT = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>FireCal · reconnecting</title>
+<style>:root{color-scheme:light dark;--bg:#fff8f3;--fg:#2a1a12;--mut:#7a5a48}
+@media (prefers-color-scheme:dark){:root{--bg:#1b1210;--fg:#fbeee6;--mut:#c9a898}}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);
+font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;text-align:center;padding:16px;box-sizing:border-box}
+main{max-width:26rem}.logo{font-size:2.6rem}h1{margin:.3rem 0;font-size:1.5rem}
+h1 b{background:linear-gradient(90deg,#ffb020,#ff5a1f);-webkit-background-clip:text;background-clip:text;color:transparent}
+p{color:var(--mut);margin:.4rem 0 1.2rem}
+button{font:inherit;font-weight:600;color:#fff;border:0;border-radius:12px;padding:.75rem 1.4rem;min-height:44px;cursor:pointer;
+background:linear-gradient(90deg,#ff8a1f,#e5381a)}</style></head><body><main>
+<div class="logo" aria-hidden="true">🔥</div><h1><b>FireCal</b> is reconnecting…</h1>
+<p>Your device lost its internet connection for a moment. This page reloads by itself as soon as it is back.</p>
+<button onclick="location.reload()">Try again now</button></main>
+<script>addEventListener("online",()=>location.reload());
+setInterval(()=>fetch(location.href,{cache:"no-store",method:"HEAD"}).then(r=>{if(r.ok)location.reload()},()=>{}),5000);</script>
+</body></html>`;
+
+async function page(e) { // the app page: fresh when online, the saved copy offline (any #hash or ?query)
   try {
-    const res = await fetch(req);
-    if (res.ok) (await caches.open(SHELL)).put("./", res.clone());
+    const res = await pageFromNetwork(e);
+    if (res.ok) { const copy = res.clone(); e.waitUntil(caches.open(SHELL).then((c) => c.put("./", copy)).catch(() => {})); }
     return res;
-  } catch (err) {
-    const shell = await caches.open(SHELL);
-    return (await shell.match("./")) || (await shell.match(req, { ignoreSearch: true })) || Response.error();
+  } catch (_) {
+    try {
+      const hit = (await fromShells("./")) || (await fromShells(e.request, { ignoreSearch: true }));
+      if (hit) return hit;
+    } catch (_) { /* storage unavailable: show the reconnecting page */ }
+    return new Response(RECONNECT, { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
   }
 }
+
+// if anything here fails (storage full or unavailable), the file comes straight from the network, as without this worker
+const answer = (e, work) => e.respondWith(work.catch(() => fetch(e.request)));
 
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
-  if (req.mode === "navigate" && url.origin === location.origin) { e.respondWith(page(req)); return; }
+  if (req.mode === "navigate" && url.origin === location.origin) {
+    // Online, the browser opens the page itself, exactly as if this worker did not exist, so nothing here
+    // (storage, a stuck request, another app's cleanup) can ever stand between a visitor and FireCal.
+    // Offline (airplane mode, no network) it opens the saved copy.
+    if (self.navigator.onLine !== false) return;
+    e.respondWith(page(e)); return;
+  }
   if (url.origin === location.origin) {
     const p = url.pathname.slice(BASE.length - 1); // path relative to the app root, starting with "/"
     if (p.startsWith("/api/jobs") || p.startsWith("/api/prepare")) return;                                  // progress: always live
     if (p.startsWith("/api/") || p.startsWith("/data/live/") || p.startsWith("/data/meta.json"))
-      e.respondWith(networkFirst(req, DATA));                                                               // fresh, offline fallback
-    else if (p.startsWith("/data/")) e.respondWith(staleWhileRevalidate(req, DATA, e));                    // precomputed history
-    else if (p.startsWith("/static/")) e.respondWith(cacheFirst(req, SHELL));                              // versioned URLs
-    else e.respondWith(networkFirst(req, SHELL));
+      answer(e, networkFirst(req, DATA));                                                                   // fresh, offline fallback
+    else if (p.startsWith("/data/")) answer(e, staleWhileRevalidate(req, DATA, e));                        // precomputed history
+    else if (p.startsWith("/static/")) answer(e, appFile(req));                                           // versioned URLs
+    else answer(e, networkFirst(req, SHELL));
   } else if (url.hostname === "cdnjs.cloudflare.com") {
-    e.respondWith(cacheFirst(req, LIBS));
+    answer(e, cacheFirst(req, LIBS));
   } else if (url.hostname === "fonts.googleapis.com" || url.hostname === "fonts.gstatic.com") {
-    e.respondWith(cacheFirst(req, FONTS));
+    answer(e, cacheFirst(req, FONTS));
   } else if (url.hostname === "server.arcgisonline.com") {
-    e.respondWith(cacheFirst(req, TILES));
+    answer(e, cacheFirst(req, TILES));
   }
 });
