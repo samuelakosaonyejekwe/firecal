@@ -150,7 +150,7 @@ function initMap() {
   // Mouse: on hover, and a click opens the country (inside the country already shown, the area around the
   // fire square). Touch screens (phones, tablets) have no hover, so a tap shows the same card, pinned, with
   // Analyze buttons (and ✕); dragging the map or tapping elsewhere closes it.
-  let lastPointer = "mouse";
+  let lastPointer = "mouse", hovered;
   const canvas = map.getCanvas();
   canvas.addEventListener("pointerdown", (ev) => { lastPointer = ev.pointerType || "mouse"; }, { passive: true });
   canvas.addEventListener("touchstart", () => { lastPointer = "touch"; }, { passive: true }); // older iOS without pointer events
@@ -188,6 +188,8 @@ function initMap() {
     canvas.style.cursor = info && (info.spot || !isShown(info.ctry)) ? "pointer" : "";
     if (!info) { hideTip(); return; }
     showTip(e.originalEvent, info.html + `<br><span class="muted">${clickHint(info)}</span>`);
+    clearTimeout(hovered);
+    if (info.ctry && !isShown(info.ctry)) hovered = setTimeout(() => FireData.prefetch({ country: info.ctry.id }), 150);
   });
   canvas.addEventListener("mouseleave", () => { if (!tipPinned) { hideTip(); map.setFilter("countries-hover", ["==", ["get", "id"], ""]); } });
 
@@ -199,6 +201,7 @@ function initMap() {
       map.setFilter("countries-hover", ["==", ["get", "id"], info.ctry?.id || ""]);
       const r = canvas.getBoundingClientRect();
       pinTip({ clientX: r.left + e.point.x, clientY: r.top + e.point.y }, info.html, info.ctry, info.spot);
+      if (info.ctry && !isShown(info.ctry)) FireData.prefetch({ country: info.ctry.id });
       return;
     }
     if (!info) return;
@@ -536,7 +539,10 @@ const renderers = {};
 const dirty = new Set();
 const visible = new Set();
 let io = null;
-function markAllDirty() { Object.keys(renderers).forEach((k) => dirty.add(k)); flush(); }
+function markAllDirty() { // charts are drawn just after the text above them has been painted
+  Object.keys(renderers).forEach((k) => dirty.add(k));
+  requestAnimationFrame(() => setTimeout(flush, 0));
+}
 function flush() {
   if (!state.data || !window.echarts) return;
   for (const id of [...dirty]) if (visible.has(id) || !io) { dirty.delete(id); try { renderers[id](); } catch (e) { console.error(id, e); } }
@@ -1255,13 +1261,19 @@ async function init() {
   if (!store.get("firecal-seen-help")) { store.set("firecal-seen-help", "1"); openHelp(); }
 
   const byName = (v) => state.meta.countries.find((c) => c.name.toLowerCase() === v.trim().toLowerCase());
+  const bestMatch = (v) => { v = v.trim().toLowerCase(); if (!v) return null;
+    return byName(v) || state.meta.countries.find((c) => c.name.toLowerCase().startsWith(v)) || state.meta.countries.find((c) => c.name.toLowerCase().includes(v)); };
+  let typed;
+  $("search").addEventListener("input", () => { // the likely country downloads while the name is still being typed
+    clearTimeout(typed);
+    typed = setTimeout(() => { const v = $("search").value; if (v.trim().length >= 2) { const c = bestMatch(v); if (c) FireData.prefetch({ country: c.id }); } }, 120);
+  });
   $("search").addEventListener("change", () => { const c = byName($("search").value); if (c) { selectAOI({ country: c.id }); $("search").blur(); } });
   $("search").addEventListener("focus", () => $("search").select());
   $("searchForm").onsubmit = (e) => {
     e.preventDefault();
-    const v = $("search").value.trim().toLowerCase();
-    if (!v) return;
-    const c = byName(v) || state.meta.countries.find((c) => c.name.toLowerCase().startsWith(v)) || state.meta.countries.find((c) => c.name.toLowerCase().includes(v));
+    if (!$("search").value.trim()) return;
+    const c = bestMatch($("search").value);
     if (c) { selectAOI({ country: c.id }); $("search").blur(); } else toast("No matching country");
   };
   $("coordForm").onsubmit = (e) => {

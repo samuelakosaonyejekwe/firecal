@@ -56,6 +56,7 @@
     mode: "server",
     async meta() { const m = await fetchJSON("api/meta"); this.maxBoxDeg2 = m.max_box_deg2; return m; },
     calendar: (a) => fetchJSON(`api/calendar?${aoiQuery(a)}`),
+    prefetch() {}, // the local server answers in milliseconds
     nowcast: (a) => fetchJSON(`api/nowcast?${aoiQuery(a)}`, {}, 2),
     grid: (bbox, year, month) => {
       const q = new URLSearchParams({ bbox: bbox.join(",") });
@@ -273,6 +274,11 @@
           missing: touched.filter((id) => byId[id] && !byId[id].ready).map((id) => ({ id, name: byId[id].name })),
         });
       });
+    },
+    // start downloading a country before it is picked (while typing, hovering or tapping on the map), so it
+    // opens at once; a repeat is free (the download is shared) and a failure is retried when it is really picked
+    prefetch(a) {
+      if (a?.country && META?.countries.some((x) => x.id === a.country && x.ready)) this.calendar(a).catch(() => {});
     },
     async nowcast(a, cal) {
       const src = await liveSource(), lm = src.meta, days = lm.complete_days;

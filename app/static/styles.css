@@ -379,6 +379,18 @@ h1, h2, .kpi .value, .now-figs b, .crit-facts b, .aoi-head h2, .help h2 { font-f
 .search input:focus { outline: none; background: #fff; color: #1c1310; border-color: #ffd166; box-shadow: 0 0 0 4px rgba(255, 209, 102, .35); }
 .topbar button.icon { background: rgba(255, 255, 255, .14); border-color: rgba(255, 255, 255, .28); color: #fff; border-radius: 10px; height: 38px; width: 38px; }
 .topbar button.icon:hover { background: rgba(255, 255, 255, .26); }
+.topbar button.icon { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.ico { width: 20px; height: 20px; flex: none; display: block; }
+.topbar button.install { width: auto; padding: 0 14px 0 11px; font-size: 14px; font-weight: 700; letter-spacing: .01em; }
+@media (max-width: 720px) { .topbar button.install { width: 38px; padding: 0; } .topbar button.install .lbl { display: none; } }
+/* theme button: a moon in light mode, a sun in dark mode (what a tap switches to) */
+.i-sun { display: none; }
+:root[data-theme="dark"] .i-sun { display: block; }
+:root[data-theme="dark"] .i-moon { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .i-sun { display: block; }
+  :root:not([data-theme="light"]) .i-moon { display: none; }
+}
 
 /* controls */
 button, select { border-radius: 10px; transition: background .15s, border-color .15s, box-shadow .15s, transform .1s; }
