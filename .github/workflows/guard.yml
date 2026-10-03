@@ -68,8 +68,8 @@ jobs:
           ok=""; out=""
           for wait in 10 30 60 0; do
             if out=$(timeout 60 gh release view firecal-data --repo "$GITHUB_REPOSITORY" --json tagName 2>&1); then ok=1; break; fi
-            if printf '%s' "$out" | grep -qi "not found"; then ok=1; break; fi
-            if printf '%s' "$out" | grep -qiE "HTTP 40[13]|bad credentials|resource not accessible"; then
+            if grep -qi "not found" <<<"$out"; then ok=1; break; fi
+            if grep -qiE "HTTP 40[13]|bad credentials|resource not accessible" <<<"$out"; then
               echo "::error::GitHub rejected the FIRECAL_PUBLISH_TOKEN secret (expired or revoked?): $out"; exit 1
             fi
             [ "$wait" = 0 ] && break

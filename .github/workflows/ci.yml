@@ -103,13 +103,14 @@ jobs:
           done
           docker inspect -f 'health={{.State.Health.Status}} user={{.Config.User}}' firecal
           test "$(docker inspect -f '{{.State.Health.Status}}' firecal)" = healthy
-          curl -sf localhost:8765/ | grep -q 'app.js?v='
+          # (responses are read whole first: `curl | grep -q` fails at random under pipefail, as grep stops reading early)
+          page=$(curl -sf localhost:8765/); grep -q 'app.js?v=' <<<"$page"
           curl -sf localhost:8765/api/meta | python -c "import json,sys; m=json.load(sys.stdin); assert len(m['countries']) > 200 and [c['id'] for c in m['countries'] if c['ready']] == ['Nigeria'], m['countries'][:3]"
           curl -sf "localhost:8765/api/calendar?country=Nigeria" | python -c "import json,sys; d=json.load(sys.stdin); assert abs(d['harmonization']['k_all'] - 3) < 0.1, d['harmonization']['k_all']"
           test "$(curl -s -o /dev/null -w '%{http_code}' 'localhost:8765/api/calendar?country=Ghana')" = 202
-          curl -sf "localhost:8765/api/locate?lon=33.4&lat=35.1" | grep -q Cyprus
+          where=$(curl -sf "localhost:8765/api/locate?lon=33.4&lat=35.1"); grep -q Cyprus <<<"$where"
           curl -sf localhost:8765/places/index.json | python -c "import json,sys; assert json.load(sys.stdin)['deg'] == 2"
-          curl -sfI localhost:8765/ | grep -qi '^x-frame-options: DENY'
+          head=$(curl -sfI localhost:8765/); grep -qi '^x-frame-options: DENY' <<<"$head"
           test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' localhost:8765/api/health)" = 400  # DNS rebinding refused
           echo "smoke test passed"
       - name: Container logs

@@ -7,7 +7,7 @@ PORT="${PORT:-8765}"
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || { echo "FireCal needs Python 3.11 or newer"; exit 1; }
 # a server already running this checkout's code is left alone; one running older code is restarted
 if health=$(curl -fs "http://127.0.0.1:${PORT}/api/health" 2>/dev/null); then
-  if printf '%s' "$health" | grep -q "\"build\":\"$(python3 app/fingerprint.py)\""; then
+  if grep -q "\"build\":\"$(python3 app/fingerprint.py)\"" <<<"$health"; then
     echo "FireCal is already running: http://127.0.0.1:${PORT}"
     exit 0
   fi
