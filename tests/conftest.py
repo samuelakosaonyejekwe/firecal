@@ -1,6 +1,7 @@
 """Test setup: the app reads synthetic data from a temporary folder, never the network or real data."""
 import os
 import pathlib
+import shutil
 import tempfile
 
 _DATA = pathlib.Path(tempfile.mkdtemp(prefix="firecal-test-"))
@@ -14,6 +15,10 @@ def pytest_configure(config):
     from tests.test_analysis import make_country
     make_country(_DATA, "Nigeria", seed=3)
     make_empty_country(_DATA, "Maldives")
+
+
+def pytest_unconfigure(config):
+    shutil.rmtree(_DATA, ignore_errors=True)  # leave nothing behind in the temp folder
 
 
 def make_empty_country(root, cid):

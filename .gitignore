@@ -4,11 +4,9 @@ __pycache__/
 *.pyc
 *.part
 .pytest_cache/
-notes.docx
-~$*.docx
+*.docx
 site/
 build/
 dl/
 submissions/FireCal-demo.en.srt
-submissions/project.description.docx
 submissions/voiceover*

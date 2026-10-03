@@ -107,4 +107,7 @@ def test_security_headers_and_request_checks():
     assert r.headers["x-content-type-options"] == "nosniff" and r.headers["x-frame-options"] == "DENY"
     assert "Content-Security-Policy" in r.text and "unsafe-eval" not in r.text and "<script>" not in r.text
     assert client.get("/api/health", headers={"host": "evil.example"}).status_code == 400  # DNS rebinding
+    assert client.get("/api/health", headers={"host": "127.0.0.1:8765"}).status_code == 200  # this computer, any port
+    sw = client.get("/sw.js").text
+    assert "{{" not in sw and 'const EDITION = "server"' in sw
     assert client.post("/api/prepare", json=["Chad"], headers={"origin": "https://evil.example"}).status_code == 403

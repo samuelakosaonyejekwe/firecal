@@ -12,8 +12,9 @@ from app.constants import AQUA_START, VIIRS_START
 RES = pathlib.Path(__file__).resolve().parent.parent / "app" / "resources"
 
 
-def make_country(root, cid, k=3.0, kt=8.0, seed=0, season=(12, 1, 2)):
-    """Synthetic fires inside `cid`'s bbox: VIIRS sees exactly k× MODIS cell-days."""
+def make_country(root, cid, k=3.0, kt=8.0, seed=0, season=(12, 1, 2), viirs_off=()):
+    """Synthetic fires inside `cid`'s bbox: VIIRS sees exactly k× MODIS cell-days (none on `viirs_off` days)."""
+    viirs_off = set(pd.DatetimeIndex(viirs_off))
     rng = np.random.default_rng(seed)
     meta = {c["id"]: c for c in json.loads((RES / "countries.json").read_text(encoding="utf-8"))}
     w, s, e, n = meta[cid]["view"]
@@ -27,7 +28,7 @@ def make_country(root, cid, k=3.0, kt=8.0, seed=0, season=(12, 1, 2)):
         if d < AQUA_START or d >= VIIRS_START:
             for i in range(int(round(m * (k / kt if d < AQUA_START else 1)))):
                 rows.append((d, y0 + i % 5, x0 + i // 5, 2))  # Terra-only
-        if d >= VIIRS_START:
+        if d >= VIIRS_START and d not in viirs_off:
             for i in range(int(round(m * k))):
                 rows.append((d, y0 + i % 7, x0 + 100 + i // 7, 1))  # VIIRS
     df = pd.DataFrame(rows, columns=["d", "yi", "xi", "s"])
@@ -109,3 +110,42 @@ def test_multi_country_box_counts_shared_border_cells_once(tmp_path):
     frames = [pd.read_parquet(f) for f in files]
     rows = sum(int(((g.yi >= y0) & (g.yi <= y1) & (g.xi >= x0) & (g.xi <= x1)).sum()) for g in frames)
     assert full.cells.sum() < rows  # the box really contains cell-days shared between files
+
+
+def test_viirs_outage_days_are_filled_from_modis_not_read_as_no_fire(tmp_path):
+    from app.analysis import VIIRS_GAPS
+    assert len(VIIRS_GAPS) >= 30  # the outages found worldwide (prior.json)
+    make_country(tmp_path, "Nigeria", viirs_off=VIIRS_GAPS)  # VIIRS saw nothing on those days, as in the real record
+    res = Store(tmp_path, RES).analyze({"country": "Nigeria"})
+    h, d = res["harmonization"], res["daily"]
+    assert h["viirs_gaps"] == [g.date().isoformat() for g in VIIRS_GAPS]
+    assert h["k_all"] == pytest.approx(3.0, rel=0.03)  # the outages don't drag the calibration down
+    start = pd.Timestamp(d["start"])
+    for g in VIIRS_GAPS:
+        i = (g - start).days
+        assert d["v"][i] is None and d["h"][i] == pytest.approx(d["m"][i] * h["k_month"][g.month - 1], abs=0.02)
+
+
+def test_highest_risk_weeks_wrap_around_new_year_and_have_fire(store):
+    weeks = [pd.to_datetime(f"{w} 2001", format="%d %b %Y") for w in store.analyze({"country": "Nigeria"})["top_weeks"]]
+    assert weeks
+    for i, a in enumerate(weeks):
+        for b in weeks[i + 1:]:
+            gap = abs(a.dayofyear - b.dayofyear)
+            assert min(gap, 365 - gap) >= 21, (a, b)  # e.g. never both "31 Dec" and "07 Jan"
+    assert weeks[0].month in (12, 1, 2)  # the busiest week is in the synthetic fire season (Dec–Feb)
+
+
+def test_live_week_starting_on_29_february_is_compared_with_every_year(store):
+    days = pd.date_range("2028-02-28", "2028-03-06")  # complete days: 29 Feb – 5 Mar
+    nrt = pd.DataFrame({"d": days, "yi": 0, "xi": 0, "n": 1, "frp": 1.0})  # no fires in the area this week
+    out = store.nowcast(nrt, {"country": "Nigeria"})
+    assert out["days"][0] == "2028-02-29" and len(out["days"]) == 6
+    assert out["n_years"] == 24  # 2001–2024, not only the leap years
+
+
+def test_map_layers_average_over_the_years_that_hold_each_month():
+    from app.analysis import layer_years
+    end = pd.Timestamp("2024-12-31")
+    assert [layer_years(m, end) for m in (1, 10, 11, 12)] == [24, 24, 25, 25]  # the record starts Nov 2000
+    assert layer_years(None, end) == pytest.approx(24.17, abs=0.01)

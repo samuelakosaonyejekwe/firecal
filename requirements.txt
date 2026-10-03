@@ -1,8 +1,9 @@
-# Exact versions verified with the test suite (python 3.12)
+# Direct dependencies, exact versions verified with the test suite (Python 3.12; 3.11+ required)
 duckdb==1.5.6
 fastapi==0.142.2
 numpy==2.5.3
 pandas==3.0.6
 pyarrow==25.0.1
 shapely==2.1.2
+starlette==1.7.0  # imported directly by app/main.py (comes with fastapi)
 uvicorn[standard]==0.54.0

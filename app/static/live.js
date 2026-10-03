@@ -141,11 +141,14 @@
       try {
         return await new Promise((resolve, reject) => {
           const w = new Worker(SELF_URL);
-          w.onmessage = (e) => { w.terminate(); e.data.error ? reject(new Error(e.data.error)) : resolve(e.data); };
+          w.onmessage = (e) => { w.terminate(); e.data.error ? reject(Object.assign(new Error(e.data.error), { fromWorker: true })) : resolve(e.data); };
           w.onerror = (e) => { w.terminate(); reject(new Error(e.message || "worker failed")); };
           w.postMessage({ url, staticCells });
         });
-      } catch (e) { /* e.g. workers blocked: parse here instead */ }
+      } catch (e) {
+        if (e.fromWorker) throw e; // NASA's download or file failed: fetching it again here would fail the same way
+        /* the worker itself couldn't run (e.g. workers blocked): parse here instead */
+      }
     }
     const r = await fetch(url, { cache: "no-store" });
     if (!r.ok) throw new Error(`NASA returned HTTP ${r.status}`);

@@ -32,3 +32,17 @@ def test_one_server_down_uses_the_other(monkeypatch):
     servers(monkeypatch, None, None)
     with pytest.raises(OSError):
         feeds.newest(waits=())
+
+
+def test_new_data_beats_an_old_file_restamped_later(monkeypatch):
+    # main re-stamps the old file (size 1000) at 22:20 while the mirror already has new data since 22:05
+    servers(monkeypatch, (T + dt.timedelta(minutes=26), 1000), (T + dt.timedelta(minutes=11), 1200))
+    assert feeds.newest(known=(1000, T)) == (MIRROR, T + dt.timedelta(minutes=11), 1200)
+    # with nothing known yet, the latest stamp still wins
+    assert feeds.newest()[0] == MAIN
+
+
+def test_a_lagging_servers_older_file_is_never_preferred(monkeypatch):
+    # we have the new 2000-byte data (10:00); the mirror still shows the old 1000-byte file (09:00)
+    servers(monkeypatch, (T + dt.timedelta(hours=1), 2000), (T, 1000))
+    assert feeds.newest(known=(2000, T + dt.timedelta(hours=1)))[2] == 2000  # no flip back to the older file

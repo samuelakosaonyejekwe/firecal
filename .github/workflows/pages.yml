@@ -21,6 +21,10 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash   # -eo pipefail: a failing command inside a pipe (e.g. `… | tee`) fails the step
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -38,8 +42,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set +o pipefail  # a lookup that fails (NASA down, no release yet) yields a fallback fingerprint, not a failed build
           data=$(gh release view firecal-data --json assets --jq '[.assets[] | .name + "@" + .updatedAt] | sort | join(",")' 2>/dev/null | sha1sum | cut -c1-16)
-          code=$(git ls-files -s app pipeline tests requirements.txt requirements-dev.txt | sha1sum | cut -c1-16)
+          code=$(git ls-files -s app pipeline tests requirements.txt requirements-dev.txt .github/workflows/pages.yml | sha1sum | cut -c1-16)
           # NASA's data, identified by its file size on the newest server (app/feeds.py): a re-stamped,
           # unchanged file doesn't trigger a rebuild
           nasa=$(python3 app/feeds.py 2>/dev/null | cut -d' ' -f2 | sha1sum | cut -c1-16)
@@ -75,19 +80,25 @@ jobs:
             build
           key: ${{ steps.fp.outputs.site }}
 
+      # Nothing below fails the run: if a step can't finish (NASA or GitHub briefly unreachable, a bad commit), the
+      # website keeps its last good version, the run says why in a warning, and the next run (≤ 15 min) tries again.
       - name: Test (code or data changed)
+        id: test
         if: steps.done.outputs.cache-hit != 'true' && steps.site.outputs.cache-hit != 'true'
+        continue-on-error: true
         run: python -m pytest -q tests
 
       - name: Build site from published countries
-        if: steps.done.outputs.cache-hit != 'true' && steps.site.outputs.cache-hit != 'true'
+        id: build
+        if: steps.done.outputs.cache-hit != 'true' && steps.site.outputs.cache-hit != 'true' && steps.test.outcome != 'failure'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p dl data/countries
           # GitHub's API sometimes answers 500 for a moment: retry, keeping files already downloaded
           for i in 1 2 3 4 5; do
-            gh release download firecal-data --dir dl --pattern '*.parquet' --pattern 'unavailable.json' --skip-existing && break
+            gh release download firecal-data --dir dl --pattern '*.parquet' --pattern '*.built.json' --pattern 'unavailable.json' --skip-existing && break
             [ "$i" = 5 ] && exit 1; echo "download interrupted; retrying"; sleep $((i * 20))
           done
           [ -f dl/unavailable.json ] && mv dl/unavailable.json data/unavailable.json
@@ -95,11 +106,13 @@ jobs:
             c=$(basename "$f" .grid_daily.parquet); mkdir -p "data/countries/$c"
             mv "$f" "data/countries/$c/grid_daily.parquet"
             [ -f "dl/$c.static_cells.parquet" ] && mv "dl/$c.static_cells.parquet" "data/countries/$c/static_cells.parquet"
+            # which NASA yearly archive the country holds: the record ends at the earliest of all (analysis.Store.end)
+            [ -f "dl/$c.built.json" ] && mv "dl/$c.built.json" "data/countries/$c/built.json"
           done
           python pipeline/static_site.py --out site --build build
 
       - name: Save built site
-        if: steps.done.outputs.cache-hit != 'true' && steps.site.outputs.cache-hit != 'true'
+        if: steps.done.outputs.cache-hit != 'true' && steps.build.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
         with:
           path: |
@@ -108,32 +121,61 @@ jobs:
           key: ${{ steps.fp.outputs.site }}
 
       - name: Refresh live fires
-        if: steps.done.outputs.cache-hit != 'true'
+        id: live
+        if: steps.done.outputs.cache-hit != 'true' && steps.test.outcome != 'failure' && steps.build.outcome != 'failure'
+        continue-on-error: true
         # if NASA can't be reached, keep the live fires already published and deploy everything else
         run: python pipeline/live.py --site site --build build --force --keep-from "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
 
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d  # v6
-        if: steps.done.outputs.cache-hit != 'true'
+        id: configure
+        if: steps.done.outputs.cache-hit != 'true' && steps.test.outcome != 'failure' && steps.build.outcome != 'failure' && steps.live.outcome == 'success'
+        continue-on-error: true
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
-        if: steps.done.outputs.cache-hit != 'true'
+        id: upload
+        if: steps.done.outputs.cache-hit != 'true' && steps.test.outcome != 'failure' && steps.build.outcome != 'failure' && steps.live.outcome == 'success' && steps.configure.outcome == 'success'
+        continue-on-error: true
         with:
           path: site
 
       - name: Deploy
         id: deploy
-        if: steps.done.outputs.cache-hit != 'true'
+        if: steps.upload.outcome == 'success'
+        continue-on-error: true
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5
+
+      - name: Wait before trying the deploy again
+        if: steps.deploy.outcome == 'failure'
+        run: sleep 60
+
+      - name: Deploy (second try)
+        id: deploy2
+        if: steps.deploy.outcome == 'failure'
+        continue-on-error: true
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5
 
       - name: Remember this state
-        if: steps.done.outputs.cache-hit != 'true'
+        id: deployed
+        if: steps.deploy.outcome == 'success' || steps.deploy2.outcome == 'success'
         run: mkdir -p .published && date -u > .published/at
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
-        if: steps.done.outputs.cache-hit != 'true'
+        if: steps.deployed.outcome == 'success'
+        continue-on-error: true
         with:
           path: .published
           key: ${{ steps.fp.outputs.published }}
+
+      - name: Report
+        if: steps.done.outputs.cache-hit != 'true' && steps.deployed.outcome != 'success'
+        env:
+          TEST: ${{ steps.test.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          LIVE: ${{ steps.live.outcome }}
+          DEPLOY: ${{ steps.deploy2.outcome || steps.deploy.outcome }}
+        run: |
+          echo "::warning::Not published this time (tests: $TEST, build: $BUILD, live fires: $LIVE, deploy: $DEPLOY); the website keeps its last good version and the next run tries again"
 
       - name: Make sure the live-fire watcher is running
         if: ${{ !cancelled() }}

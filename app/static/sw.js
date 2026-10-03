@@ -6,6 +6,7 @@
    connection at all. Areas you view are saved as you go; "Save all countries for offline" in the app
    saves every country's calendar and every map layer (see app.js). */
 const VERSION = "{{v}}";
+const EDITION = "{{edition}}"; // "static" (the website) or "server" (this computer); set where this file is served
 const SHELL = `firecal-shell-${VERSION}`;
 const DATA = "firecal-data-v2";
 const LIBS = "firecal-libs-v1";
@@ -15,9 +16,12 @@ const BASE = new URL(self.registration.scope).pathname; // e.g. "/" or "/firecal
 
 const STATIC_FILES = ["styles.css", "app.js", "data.js", "engine.js", "geo.js", "live.js", "vendor/echarts.min.js"];
 const ESSENTIAL = ["./", ...STATIC_FILES.map((f) => `static/${f}?v=${VERSION}`)]; // the page and its code
-const SHELL_URLS = [...ESSENTIAL, "manifest.webmanifest", "world.geojson", "shapes.geojson",
-  "static/icon.svg", "static/icon-192.png", "static/icon-512.png", "static/icon-maskable-512.png", "static/apple-touch-icon.png", "static/favicon-32.png"];
-const DATA_URLS = ["data/meta.json", "data/map/all/overview.json", "data/live/meta.json", "data/live/overview.json",
+const SHELL_URLS = [...ESSENTIAL, "manifest.webmanifest", "world.geojson", ...(EDITION === "static" ? ["shapes.geojson"] : []),
+  // the page asks for these three with ?v= (index.html); the manifest's icons without
+  ...["icon.svg", "apple-touch-icon.png", "favicon-32.png"].map((f) => `static/${f}?v=${VERSION}`),
+  "static/icon-192.png", "static/icon-512.png", "static/icon-maskable-512.png", "static/apple-touch-icon.png", "static/icon.svg"];
+// the website's published files (the local server answers /api/ instead)
+const DATA_URLS = EDITION !== "static" ? [] : ["data/meta.json", "data/map/all/overview.json", "data/live/meta.json", "data/live/overview.json",
                    "data/live/tiles/index.json", "data/own_cells.json", "data/live/static_cells.json"];
 const LIB_URLS = ["https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js",
                   "https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css"];
@@ -157,8 +161,21 @@ async function cacheFirst(req, cacheName) {
   const hit = await cache.match(req);
   if (hit) return hit;
   const res = await fetch(req);
-  if (res.ok || res.type === "opaque") cache.put(req, res.clone());
+  if (res.ok || res.type === "opaque") cache.put(req, res.clone()).then(() => cacheName === TILES && trimTiles()).catch(() => {});
   return res;
+}
+
+// base-map tiles are saved as they are viewed; keep the most recent MAX_TILES so storage can't grow forever
+const MAX_TILES = 4000; // ≈ 60–80 MB of tiles: the world overview plus a few countries in detail
+let trimming = null, added = 0;
+function trimTiles() {
+  if (++added % 100 || trimming) return; // check every 100 new tiles
+  trimming = (async () => {
+    const cache = await caches.open(TILES);
+    // oldest first; the world overview saved at install (zoom 0–3, see worldTiles) is always kept
+    const keys = (await cache.keys()).filter((k) => +(/\/tile\/(\d+)\//.exec(k.url)?.[1] ?? 99) > 3);
+    await Promise.all(keys.slice(0, Math.max(0, keys.length - MAX_TILES)).map((k) => cache.delete(k)));
+  })().catch(() => {}).finally(() => { trimming = null; });
 }
 
 async function staleWhileRevalidate(req, cacheName, event) {
@@ -170,7 +187,6 @@ async function staleWhileRevalidate(req, cacheName, event) {
 }
 
 async function pageFromNetwork(e) {
-  try { const pre = await e.preloadResponse; if (pre) return pre; } catch (_) { /* fall through to a normal request */ }
   try { return await fetch(e.request); }
   catch (_) { await pause(800); return fetch(e.request); } // a brief blip (Wi-Fi hiccup, network change, waking up)
 }

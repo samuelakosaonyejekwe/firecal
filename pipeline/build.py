@@ -81,9 +81,10 @@ COPY (
 
 
 def build_country(country: str, keep_raw: bool = True, archive_year: int | None = None) -> str:
-    """archive_year: NASA's latest published yearly archive when the raw files were downloaded. It is what
-    `archive_through` records, because an area with no fires that year has no file for it, and its last
-    data year alone would make every monthly update think a year is missing."""
+    """archive_year: NASA's latest yearly archive published for both sensors when the raw files were downloaded
+    (fetch.latest_archive_year). It is what `archive_through` records, because an area with no fires that year has
+    no file for it, and its last data year alone would make every monthly update think a year is missing. The app
+    shows records only through the earliest `archive_through` of all countries (analysis.Store.end)."""
     raw = DATA / "raw" / country
     out_dir = DATA / "countries" / country
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -96,11 +97,13 @@ def build_country(country: str, keep_raw: bool = True, archive_year: int | None 
     con.execute(LOAD.format(raw=raw.as_posix()))
     con.execute(GRID.format(cell=CELL, out=tmp.as_posix()))
     con.execute(STATIC.format(cell=CELL, out=(out_dir / "static_cells.parquet").as_posix()))
-    tmp.replace(out)  # atomic: the web app never sees a half-written file
-    years = con.execute("SELECT max(year(acq_date)) FROM modis").fetchone()[0]
+    # without archive_year: the last year with data from both sensors
+    years = con.execute("SELECT least((SELECT max(year(acq_date)) FROM modis), (SELECT max(year(acq_date)) FROM viirs))").fetchone()[0]
+    # written before the grid appears, so the app never sees a new grid with an old or missing record
     (out_dir / "built.json").write_text(json.dumps({  # lets `world.py --update` spot new NASA years
-        "archive_through": max([int(y) for y in (years, archive_year) if y]) if (years or archive_year) else None,
+        "archive_through": int(archive_year or years) if (archive_year or years) else None,
         "raw_files": sorted(p.name for p in raw.glob("*.csv"))}))
+    tmp.replace(out)  # atomic: the web app never sees a half-written file
     summary = con.execute(f"""
         SELECT CASE s WHEN 0 THEN 'MODIS' WHEN 1 THEN 'VIIRS' ELSE 'MODIS Terra-only' END AS sensor,
                min(d) AS first, max(d) AS last,
@@ -121,7 +124,8 @@ def main():
     ap.add_argument("--country", default="Nigeria")
     ap.add_argument("--drop-raw", action="store_true", help="delete the raw CSVs after building")
     args = ap.parse_args()
-    print(build_country(args.country, keep_raw=not args.drop_raw))
+    from pipeline.fetch import latest_archive_year
+    print(build_country(args.country, keep_raw=not args.drop_raw, archive_year=latest_archive_year()))
 
 
 if __name__ == "__main__":

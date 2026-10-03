@@ -13,12 +13,12 @@ NOW = dt.datetime.now(dt.timezone.utc)
 def world(monkeypatch):
     state = {"nasa": NOW - dt.timedelta(hours=1), "site": NOW - dt.timedelta(hours=1), "in_flight": False, "dispatched": 0,
              "watcher": True, "watchers_started": 0}
-    monkeypatch.setattr(keeper, "nasa_state", lambda: (state["nasa"], state.get("nasa_bytes", 2000)))
+    monkeypatch.setattr(keeper, "nasa_state", lambda known=None: (state["nasa"], state.get("nasa_bytes", 2000)))
     monkeypatch.setattr(keeper, "website_url", lambda: "https://example.github.io/firecal/")
     monkeypatch.setattr(keeper, "website_state", lambda url: (state["site"], state.get("site_bytes", 1000) if state["site"] else None))
     monkeypatch.setattr(keeper, "build_in_flight",
                         lambda w=keeper.WORKFLOW: state["in_flight"] if w == keeper.WORKFLOW else state["watcher"])
-    state["workflow_state"], state["enabled"] = "active", 0
+    state["workflows"], state["enabled"] = {w: "active" for w in (keeper.WORKFLOW, keeper.WATCHER, keeper.WORLD)}, 0
 
     recent = (NOW - dt.timedelta(days=3)).isoformat().replace("+00:00", "Z")
     state["world_runs"] = [{"displayTitle": "Build world (update)", "status": "completed", "conclusion": "success", "createdAt": recent}]
@@ -28,10 +28,10 @@ def world(monkeypatch):
         if args[:2] == ("run", "list"):
             return json.dumps(state["world_runs"])
         if args[0] == "api":
-            return '{"state": "%s"}' % state["workflow_state"]
+            return '{"state": "%s"}' % state["workflows"][args[1].rsplit("/", 1)[1]]
         if args[:2] == ("workflow", "enable"):
             state["enabled"] += 1
-            state["workflow_state"] = "active"
+            state["workflows"][args[2]] = "active"
             return ""
         assert args[:2] == ("workflow", "run")
         if args[2] == keeper.WORLD:
@@ -82,11 +82,19 @@ def test_keeper_stays_off_without_github(monkeypatch):
 
 
 def test_schedule_disabled_by_github_is_switched_back_on(world):
-    world["workflow_state"] = "disabled_inactivity"
+    world["workflows"][keeper.WORKFLOW] = "disabled_inactivity"
     msg, _ = keeper.check_once()
     assert world["enabled"] == 1 and "re-enabled" in msg and "current" in msg
     msg, _ = keeper.check_once()
     assert world["enabled"] == 1 and "re-enabled" not in msg
+
+
+def test_disabled_watcher_and_world_build_are_switched_back_on(world):
+    # GitHub disables every scheduled workflow after 60 quiet days; a disabled one can't even be dispatched
+    world["workflows"][keeper.WATCHER] = world["workflows"][keeper.WORLD] = "disabled_inactivity"
+    msg, _ = keeper.check_once()
+    assert world["enabled"] == 2 and "watcher schedule" in msg and "world build schedule" in msg
+    assert all(v == "active" for v in world["workflows"].values())
 
 
 def test_stopped_cloud_watcher_is_restarted_once(world):

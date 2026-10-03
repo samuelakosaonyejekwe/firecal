@@ -22,7 +22,7 @@
   font-family: var(--font);
 }
 
-/* night theme: warm charcoal, so the fire colours glow like embers */
+/* night theme: warm charcoal, so the fire colors glow like embers */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
@@ -81,7 +81,6 @@ code { font-size: 12px; background: var(--surface-2); padding: 1px 4px; border-r
 .brand { display: flex; align-items: center; gap: 10px; color: var(--accent); }
 .brand h1 { font-size: 17px; color: var(--ink); letter-spacing: -0.01em; }
 .brand p { font-size: 12px; color: var(--ink-2); }
-.topbar-actions { display: flex; align-items: center; gap: 10px; }
 
 /* ── controls ── */
 button, select {
@@ -91,14 +90,14 @@ button, select {
 }
 button:hover, select:hover { background: var(--surface-2); }
 button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-button:not(.ghost):not([role="tab"]) { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
-button:not(.ghost):not([role="tab"]):hover { filter: brightness(1.08); }
+button:not(.ghost):not(.seg-btn) { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+button:not(.ghost):not(.seg-btn):hover { filter: brightness(1.08); }
 button.active { box-shadow: inset 0 0 0 2px var(--ink); }
 .field { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
 .btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; padding: 2px; background: var(--surface-2); }
 .seg button { border: 0; background: transparent; min-height: 28px; padding: 4px 12px; color: var(--ink-2); }
-.seg button[aria-selected="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 0 0 1px var(--border); }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 0 0 1px var(--border); }
 
 /* ── layout ── */
 .layout {
@@ -190,7 +189,6 @@ td.num, th.num { text-align: right; }
 .pill.lo { background: color-mix(in srgb, var(--d-2) 22%, transparent); }
 .empty { color: var(--muted); padding: 16px 0; }
 
-.export { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 
 /* ── loading / tooltip ── */
 .loading { position: absolute; inset: 0; z-index: 5; display: none; justify-content: center; padding-top: 120px;
@@ -397,17 +395,17 @@ h1, h2, .kpi .value, .now-figs b, .crit-facts b, .aoi-head h2, .help h2 { font-f
 /* controls */
 button, select { border-radius: 10px; transition: background .15s, border-color .15s, box-shadow .15s, transform .1s; }
 button:active { transform: translateY(1px); }
-button:not(.ghost):not([role="tab"]) { background: var(--ember); color: #fff; font-weight: 650; border: 0;
+button:not(.ghost):not(.seg-btn) { background: var(--ember); color: #fff; font-weight: 650; border: 0;
   box-shadow: 0 6px 16px -6px color-mix(in srgb, var(--accent) 70%, transparent), inset 0 1px 0 rgba(255,255,255,.18); }
-button:not(.ghost):not([role="tab"]):hover { filter: brightness(1.07) saturate(1.05); }
+button:not(.ghost):not(.seg-btn):hover { filter: brightness(1.07) saturate(1.05); }
 button.ghost, select { background: var(--surface); border: 1px solid var(--border-strong); color: var(--ink); }
 button.ghost:hover, select:hover { background: var(--surface-2); border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong)); }
 button.active { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
 .seg { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 3px; }
 .seg button { border-radius: 9px; font-weight: 550; }
-.seg button[aria-selected="true"] { background: var(--surface); color: var(--ink); font-weight: 650;
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); font-weight: 650;
   box-shadow: 0 1px 2px rgba(0,0,0,.08), 0 0 0 1px var(--border-strong); }
-.seg button[aria-selected="true"]::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+.seg button[aria-pressed="true"]::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
   background: var(--accent); margin-right: 7px; vertical-align: 1px; box-shadow: 0 0 8px var(--accent); }
 .field { font-weight: 550; }
 
@@ -461,7 +459,7 @@ button.active { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, tran
 .nb i { background: linear-gradient(180deg, var(--q4), var(--q2)); border-radius: 6px 6px 2px 2px; }
 .status.big { background: var(--surface); border: 1px solid var(--border-strong); font-weight: 650; }
 
-/* audience briefing, colour per role */
+/* audience briefing, color per role */
 .brief li { background: color-mix(in srgb, var(--aud, var(--accent)) 7%, var(--surface)); border: 1px solid var(--border);
             border-left: 3px solid var(--aud, var(--accent)); border-radius: 12px; }
 .brief li::before { background: var(--aud, var(--accent)); box-shadow: 0 0 8px var(--aud, var(--accent)); }
@@ -529,7 +527,7 @@ tbody tr:hover td { background: var(--surface-2); }
 
 .stale { color: var(--critical); font-weight: 600; }
 
-/* ── older browsers without color-mix() (iOS < 16.2, Chrome < 111): plain colours instead ── */
+/* ── older browsers without color-mix() (iOS < 16.2, Chrome < 111): plain colors instead ── */
 @supports not (color: color-mix(in srgb, red, blue)) {
   .aoi-head, .now-card { background: var(--surface); }
   .brief li { background: var(--surface-2); }

@@ -13,7 +13,9 @@ on:
         description: "How long this watcher runs before handing over (default 320)"
         default: "320"
   schedule:
-    - cron: "37 */2 * * *"   # restart the watcher if it ever stopped (no-op while one is running)
+    # restarts the watcher if it ever stopped; while one is running, this run waits in the queue and is replaced by
+    # the next request (GitHub lists it as "cancelled"), so at most one watcher ever runs
+    - cron: "37 */2 * * *"
 
 permissions:
   contents: read
@@ -21,6 +23,10 @@ permissions:
 concurrency:
   group: live-watcher
   cancel-in-progress: false   # a newer request waits for the running watcher instead of stopping it
+
+defaults:
+  run:
+    shell: bash   # -eo pipefail: a failing command inside a pipe (e.g. `… | tee`) fails the step
 
 jobs:
   watch:
@@ -30,6 +36,8 @@ jobs:
       FIRECAL_SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
     steps:
       - name: Check the publishing key
+        id: key
+        continue-on-error: true   # reported here; without a key the watcher can't run (browsers still read NASA directly)
         env:
           GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
         run: |
@@ -37,22 +45,39 @@ jobs:
             echo "::error::The FIRECAL_PUBLISH_TOKEN secret is missing; the watcher can't start website builds."
             exit 1
           fi
+          # a real call: an expired or revoked key fails here, not hours later ("release not found" is a fine first run)
+          if ! gh release view firecal-data --repo "$GITHUB_REPOSITORY" > /dev/null 2> key.err && ! grep -qi "not found" key.err; then
+            echo "::error::GitHub rejected the FIRECAL_PUBLISH_TOKEN secret (expired or revoked?): $(cat key.err)"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        if: steps.key.outcome == 'success'
         with:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        if: steps.key.outcome == 'success'
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.txt
-      - run: pip install -r requirements.txt
+      - name: Install
+        id: install
+        if: steps.key.outcome == 'success'
+        continue-on-error: true
+        run: pip install -r requirements.txt
       - name: Watch NASA and rebuild the website when it has newer fires
+        id: watch
+        if: steps.install.outcome == 'success'
+        continue-on-error: true   # never fails the run; without a successful watch there's no hand-over (below)
         env:
           GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
           MINUTES: ${{ inputs.minutes || '320' }}
         run: python pipeline/keeper.py --watch "$MINUTES"
       - name: Hand over to the next watcher
-        if: ${{ !cancelled() }}   # a watcher you cancel by hand is not replaced
+        # only after a watch that ran: if installing or starting fails, the 2-hourly schedule restarts the chain
+        # later instead of a failing run starting the next one at once, forever (a cancelled watcher isn't replaced)
+        if: ${{ steps.watch.outcome == 'success' }}
+        continue-on-error: true   # the 2-hourly schedule and every website build restart the watcher anyway
         env:
           GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
         run: gh workflow run live.yml

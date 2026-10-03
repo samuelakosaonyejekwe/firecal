@@ -28,12 +28,16 @@ def published(sensor: str, year: int, country: str) -> bool:
     """Has FIRMS published this sensor-year archive for the country yet?"""
     name = f"{sensor}_{year}_{country}.csv"
     req = urllib.request.Request(f"{BASE}/{sensor}/{year}/{urllib.parse.quote(name)}", method="HEAD")
-    for wait in (5, 15, 30, None):  # a dropped connection is retried; "not found" is an answer
+    for wait in (5, 15, 30, None):  # a dropped connection or a busy server is retried; "not found" is an answer
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT):
                 return True
-        except urllib.error.HTTPError:
-            return False
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return False
+            if wait is None:
+                raise
+            time.sleep(wait)
         except (urllib.error.URLError, OSError):
             if wait is None:
                 raise
@@ -67,9 +71,10 @@ def download(sensor: str, year: int, country: str, retries: int = 3) -> str:
 
 
 def latest_archive_year() -> int:
-    """Most recent year FIRMS has published as a yearly archive (probed on a country that always burns)."""
+    """Most recent year FIRMS has published as a yearly archive for both sensors (probed on a country that always
+    burns). A year with MODIS but not yet VIIRS doesn't count: harmonizing needs both."""
     y = dt.date.today().year
-    while y > 2012 and not published("modis", y, "Brazil"):
+    while y > 2012 and not (published("modis", y, "Brazil") and published("viirs-snpp", y, "Brazil")):
         y -= 1
     return y
 

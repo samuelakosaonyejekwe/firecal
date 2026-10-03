@@ -57,7 +57,8 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # Only requests addressed to this computer by name. This blocks DNS rebinding: a web page that points its own
 # domain at 127.0.0.1 to read or drive this server. A public deployment lists its own names (see Dockerfile).
-ALLOWED_HOSTS = [h.strip() for h in os.environ.get("FIRECAL_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if h.strip()]
+# This computer's own names always work (start.sh, the Docker health check); FIRECAL_ALLOWED_HOSTS adds others.
+ALLOWED_HOSTS = ["127.0.0.1", "localhost", *(h.strip() for h in os.environ.get("FIRECAL_ALLOWED_HOSTS", "").split(",") if h.strip())]
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -229,7 +230,7 @@ def places(name: str):
 
 @app.get("/sw.js")
 def service_worker():
-    js = (STATIC / "sw.js").read_text(encoding="utf-8").replace("{{v}}", VERSION)
+    js = (STATIC / "sw.js").read_text(encoding="utf-8").replace("{{v}}", VERSION).replace("{{edition}}", "server")
     return Response(js, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
 
 

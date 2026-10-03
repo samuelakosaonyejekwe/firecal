@@ -179,3 +179,50 @@ def test_real_errors_are_not_retried(monkeypatch):
     with pytest.raises(sync.subprocess.CalledProcessError):
         sync.gh("release", "view")
     assert len(calls) == 1
+
+
+def read_only(fake):
+    """The public, read-only store over the fake release (no login: downloads only)."""
+    store = sync.PublicStore.__new__(sync.PublicStore)
+    store.exists = fake.exists
+    store.assets = {p.name: {"name": p.name, "size": p.stat().st_size,
+                             "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(p.stat().st_mtime)), "url": str(p)}
+                    for p in sorted(fake.dir.glob("*"))} if fake.exists else {}
+    store._get = lambda name, dest: shutil.copy(store.assets[name]["url"], dest)
+    return store
+
+
+def test_without_write_access_published_countries_download_and_nothing_is_published(env):
+    fake, root, built = env
+    local(root, "Chad", b"published")
+    sync.sync_country("Chad", sync.GitHubStore())          # the owner published Chad
+    shutil.rmtree(root / "Chad")
+    local(root, "Mali", b"only on this computer")
+    store = read_only(fake)
+    assert not store.can_write
+    assert sync.sync_country("Chad", store) == ("downloaded from GitHub", False)
+    assert (root / "Chad" / "grid_daily.parquet").read_bytes() == b"published"
+    assert sync.sync_country("Mali", store) == ("local", False)          # not uploaded
+    assert sync.sync_country("Niger", store) == ("built from NASA", False) and built == ["Niger"]
+    assert sorted(p.name for p in fake.dir.glob("*")) == ["Chad.grid_daily.parquet"]  # GitHub unchanged
+    store.mark_unavailable("Niger", "no VIIRS archive")  # only a publisher records it
+    assert not store.rebuild_site() and fake.workflow_runs == 0
+
+
+def test_a_login_failure_is_not_mistaken_for_an_empty_release(env, monkeypatch):
+    def denied(*args):
+        raise sync.subprocess.CalledProcessError(1, "gh", stderr="HTTP 401: Bad credentials")
+    monkeypatch.setattr(sync, "gh", denied)
+    with pytest.raises(sync.subprocess.CalledProcessError):
+        sync.GitHubStore()
+
+
+@pytest.mark.parametrize("permission, rest, can_publish", [
+    ("ADMIN", None, True), ("WRITE", None, True), ("READ", {"push": False}, False),
+    (None, {"push": True}, True),  # a token that doesn't answer viewerPermission: the REST answer decides
+])
+def test_publishing_needs_write_access(monkeypatch, permission, rest, can_publish):
+    monkeypatch.delenv("FIRECAL_NO_GITHUB", raising=False)
+    monkeypatch.setattr(sync.shutil, "which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(sync, "gh", lambda *a, **k: json.dumps(rest) if a[0] == "api" else json.dumps({"viewerPermission": permission}))
+    assert sync.github_available() is can_publish

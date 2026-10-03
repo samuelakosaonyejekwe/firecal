@@ -8,9 +8,13 @@ if curl -fs "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1; then
   echo "FireCal is already running: http://127.0.0.1:${PORT}"
   exit 0
 fi
-if [ ! -x .venv/bin/uvicorn ]; then
-  echo "Setting up the Python environment (first run only)…"
-  python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt
+# the environment follows requirements.txt: set up on the first run, reinstalled whenever the file changes
+want=$(sha1sum requirements.txt | cut -c1-40)
+if [ ! -x .venv/bin/uvicorn ] || [ "$(cat .venv/.requirements 2>/dev/null)" != "$want" ]; then
+  python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || { echo "FireCal needs Python 3.11 or newer"; exit 1; }
+  echo "Setting up the Python environment…"
+  [ -x .venv/bin/python ] || python3 -m venv .venv
+  .venv/bin/pip install -q -r requirements.txt && echo "$want" > .venv/.requirements
 fi
 mkdir -p data
 # keep the log from growing forever: roll it over past 5 MB (one previous copy is kept)

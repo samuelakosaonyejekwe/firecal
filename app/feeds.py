@@ -5,7 +5,9 @@ updated independently, and a server sometimes re-stamps an unchanged file with a
 data's version is identified by its content (the file size, which changes with every update) and
 dated by the first moment any server published that content:
 
-  * the newest server is the one with the latest Last-Modified time;
+  * the newest server is the one with the latest Last-Modified time, except that a caller who says which
+    content it already has (`known`: its size and publication time) gets a server offering different content
+    published after that: an old file re-stamped later on one server must not hide new data on the other;
   * if the other server has a file of the same size, it is the same data, published at the earlier time.
 
 A re-stamped, unchanged file therefore never looks new (no needless website rebuilds or browser
@@ -18,6 +20,8 @@ from __future__ import annotations
 
 import datetime as dt
 import email.utils
+import pathlib
+import shutil
 import time
 import urllib.request
 
@@ -35,9 +39,15 @@ def head(url: str, timeout: int = 60) -> tuple[dt.datetime, int] | None:
         return None
 
 
-def newest(timeout: int = 60, waits=(10, 30)) -> tuple[str, dt.datetime, int]:
+def download(url: str, dest: pathlib.Path, timeout: int = 120):
+    """Save `url` to `dest`; a connection that stalls for `timeout` seconds fails instead of hanging forever."""
+    with urllib.request.urlopen(url, timeout=timeout) as r, open(dest, "wb") as f:
+        shutil.copyfileobj(r, f, 1 << 20)
+
+
+def newest(timeout: int = 60, waits=(10, 30), known: tuple[int, dt.datetime] | None = None) -> tuple[str, dt.datetime, int]:
     """(url to download, when this data was first published, its size). Retries after `waits` seconds;
-    raises if no server answers at all."""
+    raises if no server answers at all. `known`: (size, publication time) of the data the caller already has."""
     for wait in (*waits, None):
         seen = [(url, *h) for url in FEEDS if (h := head(url, timeout))]
         if seen or wait is None:
@@ -45,7 +55,9 @@ def newest(timeout: int = 60, waits=(10, 30)) -> tuple[str, dt.datetime, int]:
         time.sleep(wait)  # NASA briefly unreachable: try again
     if not seen:
         raise OSError("no NASA FIRMS server answered")
-    url, modified, size = max(seen, key=lambda s: s[1])
+    # content the caller doesn't have yet and that is newer than what it has (a lagging server's older file isn't)
+    new = [s for s in seen if known is None or (s[2] != known[0] and s[1] > known[1])]
+    url, modified, size = max(new or seen, key=lambda s: s[1])
     first = min(m for _, m, n in seen if n == size)  # same content elsewhere: it was published then
     return url, first, size
 

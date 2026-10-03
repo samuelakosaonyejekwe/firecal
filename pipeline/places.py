@@ -5,8 +5,8 @@ first-level region (state, province, region…), in 2° × 2° tiles. Each tile 
 the answer for some point inside it (its own towns, plus nearer neighbours' towns where it is sparse), so
 naming any square takes one small download. The answer is the town with the smallest distance / pull,
 pull = 1 + 0.25·log10(population / 1000), so a city 15 km away is preferred to a hamlet 9 km away; the
-browser (app/static/data.js, place()) applies the same rule. Tiles with no town within MAX_KM are left out
-(open ocean, ice sheets):
+browser (app/static/data.js, place()) applies the same rule. Tiles with no town within MAX_KM of any of their
+points are left out (open ocean, ice sheets); in every other tile the answer is exactly the global one:
 
   * index.json    : {"deg": 2, "tiles": ["ty_tx", …], "countries": {"NG": "Nigeria", …}} (FireCal's spelling)
   * <ty>_<tx>.json: {"a": [region names], "c": [country codes], "p": [[name, lat×1000, lon×1000, a, c, pop], …]}
@@ -33,11 +33,16 @@ DUMP = "https://download.geonames.org/export/dump/"
 RES = pathlib.Path(__file__).resolve().parent.parent / "app" / "resources"
 OUT = RES / "places"
 DEG = 2
-KM, MAX_KM, MAX_PULL, GRID = 111.2, 250, 2.1, 33
-PER_SQUARE = 2  # FireCal's squares are 0.1°: their two biggest towns are enough to name them  # km per degree, farthest answer, largest pull, samples per tile side
+KM, MAX_KM, MAX_PULL, GRID = 111.2, 250, 2.1, 33  # km per degree, farthest answer, largest pull, samples per tile side
+PER_SQUARE = 2  # FireCal's squares are 0.1°: their two biggest towns are enough to name them
 # GeoNames country names that FireCal spells differently (countries.json): the card compares them
 FIRECAL_NAME = {"CV": "Cape Verde", "CI": "Côte d'Ivoire", "CZ": "Czech Republic", "NL": "Netherlands",
                 "PS": "Palestine", "GM": "The Gambia"}
+
+
+def wrap(d):
+    """Longitude difference in degrees, the short way round (across the 180° line where that is shorter)."""
+    return (d + 180) % 360 - 180
 
 
 def norm(s):
@@ -71,7 +76,9 @@ def main():
     lat, lon = np.array([r[1] for r in rows]), np.array([r[2] for r in rows])
     pull = 1 + 0.25 * np.log10(np.maximum([r[5] for r in rows], 1000) / 1000)
     ny, nx = 180 // DEG, 360 // DEG
-    reach = MAX_KM * MAX_PULL / KM  # degrees of latitude within which a town can be the answer
+    # a tile is kept when some point in it has a town within MAX_KM; its farthest point is then at most MAX_KM plus the
+    # tile's diagonal from that town, so towns within that distance (× the largest pull) are all the candidates needed
+    reach = (MAX_KM + math.hypot(DEG, DEG) * KM) * MAX_PULL / KM  # degrees of latitude
     order = np.argsort(lat)
     tiles = {}
     for ty in range(ny):
@@ -94,15 +101,16 @@ def main():
                 gy, gx = np.meshgrid(np.linspace(s_, n_, grid), np.linspace(w_, e_, grid))
                 py, px = gy.ravel(), gx.ravel()
                 dy = (py[:, None] - lat[cand]) * KM
-                dx = (px[:, None] - lon[cand]) * KM * np.cos(np.radians(py))[:, None]
+                dx = wrap(px[:, None] - lon[cand]) * KM * np.cos(np.radians(py))[:, None]
                 return np.hypot(dx, dy) / pull[cand]
             # coarse pass: the worst best answer in the tile bounds which towns can matter at all
             coarse = scores(5, cand).min(axis=1)
             if coarse.min() > MAX_KM:  # no town within reach anywhere in the tile (open ocean, ice)
                 continue
-            upper = min(coarse.max(), MAX_KM) + 0.5 * math.hypot(DEG / 4 * KM, DEG / 4 * KM * cos_min)
+            upper = coarse.max() + 0.5 * math.hypot(DEG / 4 * KM, DEG / 4 * KM * cos_min)
             dlat = np.maximum(0, np.maximum(s_ - lat[cand], lat[cand] - n_))
-            dlon = np.maximum(0, np.maximum(w_ - lon[cand], lon[cand] - e_))
+            mid = (w_ + e_) / 2  # distance in longitude to the tile, across the 180° line where shorter
+            dlon = np.maximum(0, np.abs(wrap(lon[cand] - mid)) - DEG / 2)
             cand = cand[np.hypot(dlat * KM, dlon * KM * cos_min) / pull[cand] <= upper]
             score = scores(GRID, cand)
             best = score.min(axis=1)

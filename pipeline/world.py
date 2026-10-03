@@ -3,7 +3,7 @@
 For each country, cheapest source first (see pipeline/sync.py):
   1. on this computer and on GitHub  -> the newer copy wins; nothing to do if they match
   2. only on this computer           -> publish it to GitHub
-  3. only on GitHub                  -> download the processed file (0.01–50 MB, not GBs of CSVs)
+  3. only on GitHub                  -> download the processed file (up to ~50 MB, not GBs of CSVs)
   4. neither                         -> download from NASA FIRMS, process, publish to GitHub
 Raw CSVs are deleted as it goes. Publishing uses your own `gh` login, then asks GitHub to
 rebuild the website, so the public app, the repository and your local copy all match.
@@ -29,7 +29,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from pipeline.fetch import latest_archive_year  # noqa: E402
 from pipeline.fetch import DATA  # noqa: E402
 from pipeline.finalize import update_prior  # noqa: E402
-from pipeline.sync import PERMANENT, GitHubStore, archive_through, github_available, rebuild, sync_country  # noqa: E402
+from pipeline.sync import PERMANENT, GitHubStore, archive_through, open_store, rebuild, sync_country  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PUBLISH_EVERY = 10         # rebuild the website after this many newly published countries
@@ -64,17 +64,22 @@ def main():
     if "--no-github" in args:
         args.remove("--no-github")
         use_github = False
-    if args and args[0] == "--shard":  # e.g. --shard 3/8 (parallel workers)
-        i, n = map(int, args[1].split("/"))
-        shard, args = (i, n), args[2:]
+    if "--shard" in args:  # e.g. --shard 3/8 (parallel workers), anywhere on the command line
+        at = args.index("--shard")
+        i, n = map(int, args[at + 1].split("/"))
+        shard, args = (i, n), args[:at] + args[at + 2:]
     ids = args or [c["id"] for c in json.loads((ROOT / "app" / "resources" / "countries.json").read_text(encoding="utf-8"))]
     ids = sorted(ids, key=lambda c: (PRIORITY.index(c) if c in PRIORITY else len(PRIORITY), c))
     if shard:
         ids = shard_of(ids, *shard)
 
-    store = GitHubStore() if use_github and github_available() else None
+    store = open_store() if use_github else None
+    if (shard or skip) and not (store and store.can_write):  # a cloud worker that can't publish would work for nothing
+        sys.exit("cannot publish to GitHub (gh missing, not logged in, or without write access to the repository); stopping")
     if use_github and not store:
-        print("GitHub not available (gh missing, not logged in, or not the repo folder); working locally only", flush=True)
+        print("GitHub not reachable; working locally only", flush=True)
+    elif store and not store.can_write:
+        print("no gh login with write access: published countries are downloaded, nothing is published", flush=True)
     known = {c["id"] for c in json.loads((ROOT / "app" / "resources" / "countries.json").read_text(encoding="utf-8"))}
     bad = [c for c in ids if c not in known]
     if bad:
@@ -120,10 +125,10 @@ def main():
                 print(f"stopping: NASA unreachable for {offline} countries in a row; "  # failing for hours
                       "run again later to continue (finished countries are kept)", flush=True)
                 break
-        if store and pending >= PUBLISH_EVERY:
+        if store and store.can_write and pending >= PUBLISH_EVERY:
             print("  → asking GitHub to rebuild the website" if store.rebuild_site() else "  (could not trigger the website rebuild)", flush=True)
             pending = 0
-    if store and pending:
+    if store and store.can_write and pending:
         print("→ asked GitHub to rebuild the website" if store.rebuild_site() else "(could not trigger the website rebuild)", flush=True)
     print(f"done; {published} published to GitHub, {len(failed)} failed: {failed}")
     if store and not shard:  # a full local run: keep the worldwide calibration in step with the world

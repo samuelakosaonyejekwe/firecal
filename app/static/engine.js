@@ -1,7 +1,7 @@
 /* FireCal analysis engine for the browser (static edition).
  *
  * A faithful port of app/analysis.py (Store.harmonize, Store._analyze, Store.nowcast) so that any
- * drawn box can be analysed without a server. tests/test_engine_parity.py runs this file under
+ * drawn box can be analyzed without a server. tests/test_engine_parity.py runs this file under
  * Node and checks its output against the Python implementation on the same data.
  */
 (function (root) {
@@ -11,9 +11,10 @@
   const MODIS_START = Date.UTC(2000, 10, 1);
   const AQUA_START = Date.UTC(2002, 6, 4);
   const VIIRS_START = Date.UTC(2012, 0, 20);
-  const TERRA_DRIFT = Date.UTC(2023, 0, 1);
+  const TERRA_DRIFT = Date.UTC(2022, 0, 1); // as app/constants.py
   const LAMBDA = 20, LAMBDA_AREA = 50;
-  const MAX_CV_ERROR = 15; // % (same as analysis.py)
+  // reliability flags and map size: the same values as app/constants.py (tests/test_engine_parity.py)
+  const MIN_OVERLAP_CELL_DAYS = 3000, MIN_R2 = 0.5, MAX_CV_ERROR = 15, MAX_MAP_CELLS = 20000, CELL = 10;
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
   // ---------- small numeric helpers (numpy/pandas semantics) ----------
@@ -76,8 +77,11 @@
   }
 
   function harmonize(S, prior, end) {
-    const { days, m, t, v } = S;
-    const monthly = monthlySums(days, { m, t, v });
+    const { days, m, t, v } = S; // v: NaN before VIIRS and on its outage days (see analyze)
+    // outage days have no reference record: left out of every comparison of the sensors (as analysis.py)
+    const gap = Array.from(days, (d, i) => d >= VIIRS_START && !isNum(v[i]));
+    const mf = m.map((x, i) => (gap[i] ? NaN : x)), tf = t.map((x, i) => (gap[i] ? NaN : x));
+    const monthly = monthlySums(days, { m: mf, t: tf, v });
     const ovStart = Date.UTC(2012, 1, 1); // VIIRS_START rolled forward to the next month start
     for (const row of monthly) row.overlap = row.ts >= ovStart && isNum(row.v);
     const [kAll, k] = fitK(monthly, "m", prior.k_world, null);
@@ -85,7 +89,7 @@
     const h = new Float64Array(days.length);
     for (let i = 0; i < days.length; i++) {
       const mo = ymd(days[i])[1];
-      h[i] = days[i] < AQUA_START ? t[i] * kt[mo] : days[i] < VIIRS_START ? m[i] * k[mo] : v[i];
+      h[i] = days[i] < AQUA_START ? t[i] * kt[mo] : days[i] < VIIRS_START || gap[i] ? m[i] * k[mo] : v[i];
     }
     const ov = monthly.filter((r) => r.overlap);
     const preds = ov.map((row) => row.m * k[row.mon - 1]);
@@ -110,7 +114,8 @@
         k_world: r(prior.k_world, 3), k_terra_world: r(prior.k_terra_world, 3), r2_monthly: r(r2, 3),
         cv, cv_median_ape: cvApe, cv_median_ape_terra: cvApeT,
         terra_check_ape: errs.length ? r(median(errs), 1) : null,
-        overlap_viirs_cell_days: r(nOv, 0), low_counts: nOv < 3000 || r2 == null || r2 < 0.5 || cvApe == null || cvApe > MAX_CV_ERROR,
+        viirs_gaps: Array.from(days).filter((d, i) => gap[i]).map(iso), // outage days filled from MODIS
+        overlap_viirs_cell_days: r(nOv, 0), low_counts: nOv < MIN_OVERLAP_CELL_DAYS || r2 == null || r2 < MIN_R2 || cvApe == null || cvApe > MAX_CV_ERROR,
         scatter: ov.map((row) => [r(row.m, 1), r(row.v, 1), row.mon]),
         periods: [
           { from: iso(MODIS_START), to: iso(AQUA_START - DAY), source: "MODIS Terra × k_terra" },
@@ -124,6 +129,9 @@
   // ---------- calendar analytics ----------
   function analyze(S, prior, meta) {
     const end = Date.UTC(S.endYear, 11, 31);
+    // VIIRS outage days (prior.viirs_gaps, from pipeline/prior.py): no record, not "no fire"
+    const gaps = new Set(prior.viirs_gaps || []);
+    if (gaps.size) S = { ...S, v: S.v.map((x, i) => (gaps.has(iso(S.days[i])) ? NaN : x)) };
     const { days } = S;
     const N = days.length;
     const { h, cal } = harmonize(S, prior, end);
@@ -203,16 +211,17 @@
       critical = { start: offLabel(med.start_off), peak: offLabel(med.peak_off), end: offLabel(med.end_off),
                    length: Math.trunc(med.end_off - med.start_off + 1), start_off: roundEven(med.start_off), peak_off: roundEven(med.peak_off), end_off: roundEven(med.end_off) };
     }
-    // four busiest non-overlapping weeks (trailing 7-day sum of the mean climatology)
-    const wk = clim.mean.map((_, i) => sum(clim.mean.slice(Math.max(0, i - 6), i + 1)));
+    // four busiest weeks, at least 3 weeks apart (as analysis.py): 7-day sums centred on each day of the mean
+    // year, wrapping around New Year; ties go to the earlier date; weeks with fire only
+    const n = clim.mean.length;
+    const wk = clim.mean.map((_, i) => { let s = 0; for (let j = -3; j <= 3; j++) s += clim.mean[(i + j + n) % n]; return s; });
     const doy = (k) => Math.round((Date.UTC(2001, +k.slice(0, 2) - 1, +k.slice(3)) - Date.UTC(2001, 0, 1)) / DAY) + 1;
-    const topWeeks = [];
-    if (Math.max(...wk) > 0) {
-      for (const i of wk.map((v, i) => i).sort((a, b) => wk[b] - wk[a] || a - b)) {
-        if (topWeeks.every((t) => Math.abs(doy(keys[i]) - doy(t)) >= 21)) topWeeks.push(keys[i]);
-        if (topWeeks.length === 4) break;
-      }
+    const top = [];
+    for (const i of wk.map((v, i) => i).sort((a, b) => wk[b] - wk[a] || a - b)) {
+      if (wk[i] <= 0 || top.length === 4) break;
+      if (top.every((j) => { const d = Math.abs(doy(keys[i]) - doy(keys[j])); return Math.min(d, 365 - d) >= 21; })) top.push(i);
     }
+    const topWeeks = top.map((i) => keys[i]);
     // annual totals
     const ys = years.filter((y) => y >= firstFull && y <= lastFull);
     const ym = new Map(), yv = new Map(), yh = new Map();
@@ -250,12 +259,11 @@
     const out = { available: true, days: liveDays, cells: liveCells, total };
     if (!h) return { ...out, history: false };
     const end = Date.UTC(endYear, 11, 31);
-    const d0 = new Date(liveDays[0] + "T00:00:00Z"), d1 = new Date(liveDays[liveDays.length - 1] + "T00:00:00Z");
+    const d0 = new Date(liveDays[0] + "T00:00:00Z"), L = liveDays.length;
     const hist = [];
-    for (let y = 2001; y <= endYear; y++) {
-      const a = Date.UTC(y, d0.getUTCMonth(), d0.getUTCDate());
-      const b = Date.UTC(y + (d1.getUTCFullYear() - d0.getUTCFullYear()), d1.getUTCMonth(), d1.getUTCDate());
-      if (new Date(a).getUTCDate() !== d0.getUTCDate() || new Date(b).getUTCDate() !== d1.getUTCDate()) continue; // Feb 29
+    for (let y = 2001; y <= endYear; y++) { // same start date (28 Feb for 29 Feb), same length (as analysis.py)
+      const mo = d0.getUTCMonth(), dd = d0.getUTCDate(), leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+      const a = Date.UTC(y, mo, mo === 1 && dd === 29 && !leap ? 28 : dd), b = a + (L - 1) * DAY;
       if (b > end) continue;
       let s = 0; for (let i = Math.round((a - MODIS_START) / DAY); i <= Math.round((b - MODIS_START) / DAY); i++) s += h[i] || 0;
       hist.push(s);
@@ -267,6 +275,7 @@
   }
 
   const api = { analyze, series, nowcast, harmonize, DAY,
-                constants: { MODIS_START, AQUA_START, VIIRS_START, TERRA_DRIFT, LAMBDA, LAMBDA_AREA, MAX_CV_ERROR } };
+                constants: { MODIS_START, AQUA_START, VIIRS_START, TERRA_DRIFT, LAMBDA, LAMBDA_AREA, MIN_OVERLAP_CELL_DAYS, MIN_R2,
+                             MAX_CV_ERROR, MAX_MAP_CELLS, CELL } };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.FireEngine = api;
 })(typeof self !== "undefined" ? self : this);

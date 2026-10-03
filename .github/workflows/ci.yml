@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash   # -eo pipefail: a failing command inside a pipe (e.g. `… | tee`) fails the step
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -34,7 +38,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Build image
-        run: docker build -t firecal:ci .
+        run: |
+          # the build downloads Python packages: a network hiccup is retried, a real build error still fails
+          for i in 1 2 3; do docker build -t firecal:ci . && break; [ "$i" = 3 ] && exit 1; sleep $((i * 30)); done
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.12"
@@ -60,6 +66,9 @@ jobs:
           curl -sf "localhost:8765/api/calendar?country=Nigeria" | python -c "import json,sys; d=json.load(sys.stdin); assert abs(d['harmonization']['k_all'] - 3) < 0.1, d['harmonization']['k_all']"
           test "$(curl -s -o /dev/null -w '%{http_code}' 'localhost:8765/api/calendar?country=Ghana')" = 202
           curl -sf "localhost:8765/api/locate?lon=33.4&lat=35.1" | grep -q Cyprus
+          curl -sf localhost:8765/places/index.json | python -c "import json,sys; assert json.load(sys.stdin)['deg'] == 2"
+          curl -sfI localhost:8765/ | grep -qi '^x-frame-options: DENY'
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' localhost:8765/api/health)" = 400  # DNS rebinding refused
           echo "smoke test passed"
       - name: Container logs
         if: always()

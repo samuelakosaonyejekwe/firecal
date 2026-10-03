@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from app.analysis import Store
+from app.analysis import VIIRS_GAPS, Store
 
 from .test_analysis import RES, make_country
 
@@ -32,8 +32,11 @@ process.stdout.write(JSON.stringify(E.analyze(S, inp.prior, { aoi: inp.aoi, labe
 def run_js(store: Store, aoi):
     day, *_ = store.series(aoi)
     pm, pt = store.prior()
-    inp = {"endYear": store.end.year, "aoi": aoi, "prior": {"k_world": pm, "k_terra_world": pt},
-           "m": day.m.tolist(), "t": day.t.tolist(), "v": [None if math.isnan(x) else x for x in day.v]}
+    gaps = [d.date().isoformat() for d in VIIRS_GAPS]
+    # as on the website: the browser's tiles hold 0 on VIIRS outage days, and the prior lists those days
+    v = [0.0 if d.date().isoformat() in gaps else (None if math.isnan(x) else x) for d, x in zip(day.index, day.v)]
+    inp = {"endYear": store.end.year, "aoi": aoi, "prior": {"k_world": pm, "k_terra_world": pt, "viirs_gaps": gaps},
+           "m": day.m.tolist(), "t": day.t.tolist(), "v": v}
     res = subprocess.run(["node", "-e", RUNNER, str(ENGINE)], input=json.dumps(inp), capture_output=True, text=True, check=True)
     return json.loads(res.stdout)
 
@@ -57,6 +60,7 @@ def compare(py, js):
     for k in ("k_all", "k_terra_all", "r2_monthly", "cv_median_ape", "cv_median_ape_terra", "terra_check_ape", "overlap_viirs_cell_days"):
         assert close(hp[k], hj[k], 0.0011 if k.startswith("k") else 0.11), (k, hp[k], hj[k])
     assert hp["low_counts"] == hj["low_counts"]
+    assert hp["viirs_gaps"] == hj["viirs_gaps"]
     assert_lists(hp["k_month"], hj["k_month"], 0.0011)
     assert [c["year"] for c in hp["cv"]] == [c["year"] for c in hj["cv"]]
     assert close(py["total_cell_days"], js["total_cell_days"], 1.01)
@@ -111,5 +115,5 @@ def test_engine_constants_match_python():
     assert js["MODIS_START"] == ms(C.MODIS_START) and js["AQUA_START"] == ms(C.AQUA_START)
     assert js["VIIRS_START"] == ms(C.VIIRS_START) and js["TERRA_DRIFT"] == ms(C.TERRA_DRIFT)
     assert js["LAMBDA"] == C.LAMBDA and js["LAMBDA_AREA"] == C.LAMBDA_AREA
-    from app.analysis import MAX_CV_ERROR
-    assert js["MAX_CV_ERROR"] == MAX_CV_ERROR
+    assert js["MIN_OVERLAP_CELL_DAYS"] == C.MIN_OVERLAP_CELL_DAYS and js["MIN_R2"] == C.MIN_R2
+    assert js["MAX_CV_ERROR"] == C.MAX_CV_ERROR and js["MAX_MAP_CELLS"] == C.MAX_MAP_CELLS and js["CELL"] == C.CELL

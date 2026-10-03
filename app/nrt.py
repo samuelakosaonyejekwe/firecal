@@ -8,16 +8,16 @@ cell-days. If NASA can't be reached, the last good copy keeps being served.
 """
 from __future__ import annotations
 
+import datetime as dt
 import pathlib
 import threading
 import time
-import urllib.request
 
 import duckdb
 import pandas as pd
 
 from .constants import CELL
-from .feeds import newest
+from .feeds import download, newest
 
 CHECK = 600  # seconds between "has NASA's feed changed?" checks
 
@@ -34,7 +34,7 @@ class NRTFeed:
 
     def _refresh(self, url: str):
         csv = self.dir / "feed.csv.part"
-        urllib.request.urlretrieve(url, csv)
+        download(url, csv)
         tmp = self.path.with_suffix(".tmp")
         with duckdb.connect() as con:
             con.execute(f"""
@@ -50,14 +50,21 @@ class NRTFeed:
 
     def refresh_if_stale(self):
         """Download NASA's feed if its content changed since the copy we have (or we have none)."""
-        stamp = self.dir / "source_bytes"
+        stamp = self.dir / "source_bytes"  # "<size> <publication time>" of the copy we have
+        known = None
         try:
-            url, _, size = newest(timeout=30, waits=())
-            if self.path.exists() and stamp.exists() and stamp.read_text() == str(size):
+            if self.path.exists():
+                size_s, when = stamp.read_text().split()
+                known = (int(size_s), dt.datetime.fromisoformat(when))
+        except (OSError, ValueError):  # no stamp, or a damaged one: download again
+            known = None
+        try:
+            url, first, size = newest(timeout=30, waits=(), known=known)
+            if known and known[0] == size:
                 self.error = None
                 return  # unchanged (perhaps re-stamped by NASA): nothing to download
             self._refresh(url)
-            stamp.write_text(str(size))
+            stamp.write_text(f"{size} {first.isoformat()}")
             self.error = None
         except Exception as e:  # offline / FIRMS down: keep serving the last good copy
             self.error = f"live feed unavailable ({e.__class__.__name__})"

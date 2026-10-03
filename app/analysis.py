@@ -29,6 +29,7 @@ border cells so nothing is double-counted.
 """
 from __future__ import annotations
 
+import calendar
 import concurrent.futures as cf
 import hashlib
 import json
@@ -44,15 +45,32 @@ import pandas as pd
 import shapely
 from shapely.geometry import box, shape
 
-from .constants import (AQUA_START, CELL, LAMBDA, LAMBDA_AREA, MODIS_START, TERRA_DRIFT,
-                        VIIRS_START, load_prior)
+from .constants import (AQUA_START, CELL, LAMBDA, LAMBDA_AREA, MAX_CV_ERROR, MAX_MAP_CELLS, MIN_OVERLAP_CELL_DAYS,
+                        MIN_R2, MODIS_START, PRIOR_FILE, TERRA_DRIFT, VIIRS_START, load_prior, load_viirs_gaps)
 
 # fingerprint of the analysis code: cached results are invalidated whenever the method changes
+# (the prior file too: its worldwide ratios and VIIRS outage days change every result)
 CODE_VERSION = hashlib.sha1(b"".join(
-    (pathlib.Path(__file__).parent / f).read_bytes() for f in ("analysis.py", "constants.py"))).hexdigest()[:10]
-MAX_MAP_CELLS = 20000  # coarsen map layers beyond this many cells
+    (pathlib.Path(__file__).parent / f).read_bytes() for f in ("analysis.py", "constants.py")) + PRIOR_FILE.read_bytes()).hexdigest()[:10]
+VIIRS_GAPS = load_viirs_gaps()
+
+
+# ---- map layers (shared by the server and the website build, pipeline/static_site.py) ----
+def layer_years(month, end) -> float:
+    """Years a multi-year map layer averages over: those whose `month` is in the record, or the record's length."""
+    if month:
+        return sum(MODIS_START <= pd.Timestamp(y, int(month), 1) <= end for y in range(MODIS_START.year, end.year + 1))
+    return ((end - MODIS_START).days + 1) / 365.2425
+
+
+def vequiv_sql(k, kt) -> str:
+    """One grid row's VIIRS-equivalent fire day: VIIRS itself, or calibrated MODIS before it and on its outage days."""
+    gaps = ",".join(f"DATE '{d.date()}'" for d in VIIRS_GAPS)
+    viirs = f"d >= DATE '{VIIRS_START.date()}'" + (f" AND d NOT IN ({gaps})" if gaps else "")
+    return f"""CASE WHEN {viirs} THEN (s = 1)::INT * 1.0
+                    WHEN d >= DATE '{AQUA_START.date()}' THEN (s = 0)::INT * {k}
+                    ELSE (s = 2)::INT * {kt} END"""
 GRID_WORKERS = 6       # countries computed in parallel for a map layer
-MAX_CV_ERROR = 15.0    # % median out-of-sample error above which results are flagged "indicative only"
 
 
 def _df(sql: str) -> pd.DataFrame:
@@ -86,7 +104,12 @@ class NeedsData(Exception):
         self.missing = missing
 
 
+_MISS = object()
+
+
 class LRU(OrderedDict):
+    """Least-recently-used memory cache, safe to share between request threads."""
+
     def __init__(self, n):
         super().__init__()
         self.n = n
@@ -99,6 +122,18 @@ class LRU(OrderedDict):
             while len(self) > self.n:
                 self.popitem(last=False)
         return v
+
+    def lookup(self, k):
+        """The cached value (now the most recent), or _MISS; one step, so another thread can't evict it in between."""
+        with self._put_lock:
+            if k in self:
+                self.move_to_end(k)
+                return OrderedDict.__getitem__(self, k)
+        return _MISS
+
+    def memo(self, k, make):
+        v = self.lookup(k)
+        return self.put(k, make()) if v is _MISS else v
 
 
 class Store:
@@ -121,10 +156,11 @@ class Store:
         self._grids = LRU(256)
         self._ready: dict[str, float] = {}
         self._extent: dict[str, list] = {}
+        self._extent_of: dict[str, float] = {}  # file time each extent was read at (a rebuilt country is re-read)
         self._wide_view: dict[str, list] = {}
         self._grid_locks: dict = {}
         self._prior = None
-        self.end = pd.Timestamp("2024-12-31")
+        self.end = pd.Timestamp(pd.Timestamp.now().year - 1, 12, 31)  # the last full year, until a country is processed
         self.refresh()
 
     # ------------------------------------------------------------ catalogue
@@ -137,7 +173,8 @@ class Store:
             ready = {}
             for p in self.cdir.glob("*/grid_daily.parquet"):
                 try:
-                    ready[p.parent.name] = p.stat().st_mtime
+                    meta = p.parent / "built.json"  # its archive year can change the record's end (see below)
+                    ready[p.parent.name] = (p.stat().st_mtime, meta.stat().st_mtime if meta.exists() else 0.0)
                 except FileNotFoundError:  # removed between the glob and the stat
                     pass
             if ready == self._ready:
@@ -145,17 +182,35 @@ class Store:
             self._ready = ready
             self._mem.clear()
             self._grids.clear()
-            for cid in ready:
-                if cid not in self._extent:
-                    e = _rows(f"SELECT min(xi), min(yi), max(xi), max(yi), max(d) FROM '{self.path(cid)}'")[0]
-                    if e[0] is not None:  # a country with no fire records at all has no data extent
-                        self._extent[cid] = [e[0] / CELL, e[1] / CELL, (e[2] + 1) / CELL, (e[3] + 1) / CELL, pd.Timestamp(e[4])]
-                        if (e[2] - e[0]) / CELL > 180:  # spans the 180° line (Russia, USA, Fiji, NZ): frame the main part
-                            self._wide_view[cid] = self._main_side(cid)
-            dated = [self._extent[c][4] for c in ready if c in self._extent]
-            if dated:
-                last = max(dated)
-                self.end = pd.Timestamp(last.year, 12, 31)
+            for cid in [c for c in self._extent_of if c not in ready]:  # removed countries
+                self._extent.pop(cid, None), self._wide_view.pop(cid, None), self._extent_of.pop(cid)
+            for cid, mtime in ready.items():
+                if self._extent_of.get(cid) == mtime:
+                    continue
+                self._extent_of[cid] = mtime
+                self._extent.pop(cid, None), self._wide_view.pop(cid, None)
+                e = _rows(f"SELECT min(xi), min(yi), max(xi), max(yi), max(d) FROM '{self.path(cid)}'")[0]
+                if e[0] is not None:  # a country with no fire records at all has no data extent
+                    self._extent[cid] = [e[0] / CELL, e[1] / CELL, (e[2] + 1) / CELL, (e[3] + 1) / CELL, pd.Timestamp(e[4])]
+                    if (e[2] - e[0]) / CELL > 180:  # spans the 180° line (Russia, USA, Fiji, NZ): frame the main part
+                        self._wide_view[cid] = self._main_side(cid)
+            # One record end for every area: the earliest NASA yearly archive any country was built with. A country
+            # still awaiting next year's rebuild must not show that year as zero fires, so a new year appears once
+            # every country has it (pipeline/build.py records archive_through).
+            years = [y for y in (self._archive_through(c) for c in ready) if y]
+            if years:
+                self.end = pd.Timestamp(min(years), 12, 31)
+
+    def _archive_through(self, cid) -> int | None:
+        """Last NASA yearly archive in this country's file (built.json), else its last year of data."""
+        meta = self.cdir / cid / "built.json"
+        try:
+            y = json.loads(meta.read_text()).get("archive_through")
+            if y:
+                return int(y)
+        except (FileNotFoundError, ValueError):
+            pass
+        return self._extent[cid][4].year if cid in self._extent else None
 
     @property
     def ready(self):
@@ -270,6 +325,7 @@ class Store:
             out[col + "_det"] = part["det"].reindex(idx).fillna(0.0)
             out[col + "_frp"] = part["frp"].reindex(idx).fillna(0.0)
         out.loc[idx < VIIRS_START, ["v", "v_det", "v_frp"]] = np.nan
+        out.loc[idx.isin(VIIRS_GAPS), ["v", "v_det", "v_frp"]] = np.nan  # VIIRS outage days: no record, not "no fire"
         return out
 
     @staticmethod
@@ -305,12 +361,17 @@ class Store:
 
     def harmonize(self, day: pd.DataFrame):
         pm, pt = self.prior()
-        monthly = day[["m", "t", "v"]].resample("MS").sum(min_count=1)
+        # VIIRS outage days (no reference record): MODIS stands in for them, scaled like the pre-VIIRS years,
+        # and they are left out of every comparison of the sensors (fits, R², cross-validation, scatter)
+        gap = np.asarray((day.index >= VIIRS_START) & day.v.isna())
+        fit = day[["m", "t", "v"]].copy()
+        fit.loc[gap, ["m", "t"]] = np.nan
+        monthly = fit.resample("MS").sum(min_count=1)
         monthly["overlap"] = (monthly.index >= (VIIRS_START + pd.offsets.MonthBegin(0))) & monthly.v.notna()
         k_all, k = self._fit_k(monthly, "m", pm)
         kt_all, kt = self._fit_k(monthly, "t", pt)
         mo = day.index.month - 1
-        day["h"] = np.select([day.index < AQUA_START, day.index < VIIRS_START], [day.t * kt[mo], day.m * k[mo]], day.v)
+        day["h"] = np.select([day.index < AQUA_START, (day.index < VIIRS_START) | gap], [day.t * kt[mo], day.m * k[mo]], day.v)
 
         ov = monthly[monthly.overlap].copy()
         ov["pred"] = ov.m * k[ov.index.month - 1]
@@ -333,10 +394,12 @@ class Store:
             "r2_monthly": _r(r2, 3),
             "cv": cv, "cv_median_ape": cv_ape, "cv_median_ape_terra": cv_ape_t,
             "terra_check_ape": terra_check,
+            "viirs_gaps": [d.date().isoformat() for d in day.index[gap]],  # outage days filled from MODIS
             # "indicative only": few fires (small islands, deserts, humid forest), a poor monthly fit,
             # or a large out-of-sample error; see MAX_CV_ERROR
             "overlap_viirs_cell_days": _r(n_ov, 0),
-            "low_counts": bool(n_ov < 3000 or r2 is None or r2 < 0.5 or cv_ape is None or cv_ape > MAX_CV_ERROR),
+            "low_counts": bool(n_ov < MIN_OVERLAP_CELL_DAYS or r2 is None or r2 < MIN_R2 or cv_ape is None
+                               or cv_ape > MAX_CV_ERROR),
             "scatter": [[_r(a, 1), _r(b, 1), int(i.month)] for i, a, b in zip(ov.index, ov.m, ov.v)],
             "periods": [
                 {"from": MODIS_START.date().isoformat(), "to": (AQUA_START - pd.Timedelta(days=1)).date().isoformat(),
@@ -350,9 +413,9 @@ class Store:
     def series(self, aoi):
         """Harmonized daily series for an AOI (memoized)."""
         files, ids, missing, bbox, label = self.resolve(aoi)
-        key = ("series", json.dumps(aoi, sort_keys=True), self.version(ids), self.prior())
-        if key in self._mem:
-            return self._mem[key]
+        key = ("series", json.dumps(aoi, sort_keys=True), self.version(ids), self.prior(), self.end)
+        if (hit := self._mem.lookup(key)) is not _MISS:
+            return hit
         day = self.daily(files, bbox)
         cal = self.harmonize(day)
         return self._mem.put(key, (day, cal, ids, missing, bbox, label))
@@ -362,7 +425,8 @@ class Store:
         """Analysis as ready-to-send JSON bytes, served straight from the disk cache when possible."""
         _, ids, _, _, _ = self.resolve(aoi)
         # key on the data version, the calibration prior (small areas lean on it) and the code version
-        key = json.dumps(aoi, sort_keys=True) + self.version(ids) + "%.6f/%.6f" % self.prior() + CODE_VERSION
+        # (the record's end too: when the last country gains a new year, every area's results extend)
+        key = json.dumps(aoi, sort_keys=True) + self.version(ids) + "%.6f/%.6f" % self.prior() + CODE_VERSION + str(self.end.date())
         cache = self.cache_dir / f"cal_{hashlib.sha1(key.encode()).hexdigest()[:20]}.json"
         if cache.exists():
             return cache.read_bytes()
@@ -375,7 +439,12 @@ class Store:
 
     def _prune_cache(self, keep=400):
         """Results from older code/data versions are never read again; keep the cache bounded."""
-        files = sorted(self.cache_dir.glob("cal_*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+        def age(f):
+            try:
+                return f.stat().st_mtime
+            except FileNotFoundError:  # another request pruned it a moment ago
+                return 0.0
+        files = sorted(self.cache_dir.glob("cal_*.json"), key=age, reverse=True)
         for f in files[keep:]:
             f.unlink(missing_ok=True)
 
@@ -464,15 +533,19 @@ class Store:
             critical = {"start": off_label(med["start_off"]), "peak": off_label(med["peak_off"]),
                         "end": off_label(med["end_off"]), "length": int(med["end_off"] - med["start_off"] + 1),
                         **{k: _r(v, 0) for k, v in med.items()}}
-        wk = clim["mean"].rolling(7, min_periods=1).sum()
-        top_weeks = []
-        if wk.max() > 0:
-            for key in wk.sort_values(ascending=False).index:
-                if all(abs(pd.Timestamp(f"2001-{key}").dayofyear - pd.Timestamp(f"2001-{t}").dayofyear) >= 21
-                       for t in top_weeks):
-                    top_weeks.append(key)
-                if len(top_weeks) == 4:
-                    break
+        # four busiest weeks, at least 3 weeks apart: 7-day sums centred on each day of the mean year, wrapping
+        # around New Year (31 Dec and 7 Jan are one week apart); ties go to the earlier date; weeks with fire only
+        avg = clim["mean"].to_numpy(dtype=float)
+        n = len(avg)
+        wk = np.array([avg[[(i + j) % n for j in range(-3, 4)]].sum() for i in range(n)])
+        doy = [pd.Timestamp(f"2001-{k}").dayofyear for k in clim.index]
+        top = []
+        for i in sorted(range(n), key=lambda i: (-wk[i], i)):
+            if wk[i] <= 0 or len(top) == 4:
+                break
+            if all(min(abs(doy[i] - doy[j]), 365 - abs(doy[i] - doy[j])) >= 21 for j in top):
+                top.append(i)
+        top_weeks = [clim.index[i] for i in top]
 
         yearly = pd.DataFrame({"m": day.m, "v": day.v, "h": h}).resample("YS").sum(min_count=1)
         yearly = yearly[(yearly.index.year >= first_full) & (yearly.index.year <= last_full)]
@@ -506,40 +579,38 @@ class Store:
     # -------------------------------------------------------------------- map
     def _country_grid(self, cid, year, month) -> pd.DataFrame:
         """Per-cell VIIRS-equivalent fire days for one country (memoized)."""
-        key = (cid, self._ready.get(cid), year, month, self.prior())
-        if key in self._grids:
-            return self._grids[key]
+        key = (cid, self._ready.get(cid), year, month, self.prior(), self.end)
+        if (hit := self._grids.lookup(key)) is not _MISS:
+            return hit
         with self._lock:  # requests asking for the same layer at once share one computation
             lock = self._grid_locks.setdefault(key, threading.Lock())
         with lock:
-            if key in self._grids:
-                return self._grids[key]
+            if (hit := self._grids.lookup(key)) is not _MISS:
+                return hit
             return self._compute_grid(cid, year, month, key)
 
     def _compute_grid(self, cid, year, month, key) -> pd.DataFrame:
         # disk cache survives restarts; invalidated when the grid is rebuilt or the prior changes
-        tag = hashlib.sha1(("%.6f/%.6f" % self.prior() + CODE_VERSION).encode()).hexdigest()[:8]
+        tag = hashlib.sha1(("%.6f/%.6f" % self.prior() + CODE_VERSION + str(self.end.date())).encode()).hexdigest()[:8]
         disk = self.cdir / cid / "grid_cache" / tag / f"{year or 'all'}_{month or 'all'}.parquet"
         if disk.exists() and disk.stat().st_mtime >= self.path(cid).stat().st_mtime:
             return self._grids.put(key, pd.read_parquet(disk))
         if not disk.parent.exists():  # first layer for this version: drop layers of older versions
             for old in disk.parent.parent.glob("*"):
-                if old.is_dir():
+                if old.is_dir() and old.name != tag:  # (another thread may have just created this version's folder)
                     shutil.rmtree(old, ignore_errors=True)
         k, kt = self._country_k(cid, disk.parent)
-        where = []
+        where = [f"d <= DATE '{self.end.date()}'"]  # the record shown everywhere ends here (a country rebuilt early waits)
         if year:
             where.append(f"year(d) = {int(year)}")
         if month:
             where.append(f"month(d) = {int(month)}")
         w = ("AND " + " AND ".join(where)) if where else ""
         df = _df(f"""
-            SELECT xi, yi, sum(CASE WHEN d >= DATE '{VIIRS_START.date()}' THEN (s = 1)::INT * 1.0
-                                     WHEN d >= DATE '{AQUA_START.date()}' THEN (s = 0)::INT * {k}
-                                     ELSE (s = 2)::INT * {kt} END) AS val
+            SELECT xi, yi, sum({vequiv_sql(k, kt)}) AS val
             FROM '{self.path(cid)}' WHERE true {w} GROUP BY xi, yi HAVING val > 0""")
-        if not year:
-            df["val"] /= (self.end.year - MODIS_START.year + 1)
+        if not year:  # mean per year over the years that hold this month (or the whole record)
+            df["val"] /= layer_years(month, self.end)
         disk.parent.mkdir(parents=True, exist_ok=True)
         tmp = disk.with_suffix(f".{threading.get_ident()}.tmp")
         df.to_parquet(tmp)
@@ -570,20 +641,21 @@ class Store:
         parts = [g[(g.yi >= y0) & (g.yi <= y1) & (g.xi >= x0) & (g.xi <= x1)] for g in grids]
         df = pd.concat(parts) if parts else pd.DataFrame({"xi": [], "yi": [], "val": []})
         df = df.groupby(["xi", "yi"], as_index=False).val.max() if len(parts) > 1 else df
-        # one colour scale for the whole world (as on the website), so a colour means the same everywhere
+        # one color scale for the whole world (as on the website), so a color means the same everywhere
         return {**self._coarsen(df), "max": self._layer_max(year, month), "year": year, "month": month, "countries": ids}
 
     def _layer_max(self, year, month) -> float:
         """99th percentile of the layer's 0.1° cells over every available country (pipeline/static_site.py's rule)."""
-        key = ("layermax", tuple(sorted(self._ready.items())), year, month, self.prior())
-        if key not in self._mem:
+        key = ("layermax", tuple(sorted(self._ready.items())), year, month, self.prior(), self.end)
+
+        def compute():
             with cf.ThreadPoolExecutor(max_workers=GRID_WORKERS) as pool:
                 grids = list(pool.map(lambda c: self._country_grid(c, year, month), self.ready))
             df = pd.concat(grids) if grids else pd.DataFrame({"xi": [], "yi": [], "val": []})
             vals = df.groupby(["xi", "yi"]).val.max() if len(grids) > 1 else df.val
             vals = vals[vals >= 0.05]  # below 0.05 a cell rounds to "no fire" on the website
-            self._mem.put(key, _r(float(np.quantile(vals, 0.99)), 2) if len(vals) else 0)
-        return self._mem[key]
+            return _r(float(np.quantile(vals, 0.99)), 2) if len(vals) else 0
+        return self._mem.memo(key, compute)
 
     @staticmethod
     def _coarsen(df, limit=MAX_MAP_CELLS, how="mean"):
@@ -600,17 +672,16 @@ class Store:
     # ------------------------------------------------------------- live/NRT
     def _own_cells(self, cid) -> set:
         key = ("own", cid, self._ready.get(cid))
-        if key not in self._mem:
-            self._mem.put(key, set(map(tuple, _rows(f"SELECT DISTINCT yi, xi FROM '{self.path(cid)}'"))))
-        return self._mem[key]
+        return self._mem.memo(key, lambda: set(map(tuple, _rows(f"SELECT DISTINCT yi, xi FROM '{self.path(cid)}'"))))
 
     def _all_static(self) -> pd.DataFrame | None:
         """Industrial-heat cells of every available country (yi, xi, _static), cached per data version."""
         key = ("static-all", tuple(sorted(self._ready.items())))
-        if key not in self._mem:
+
+        def compute():
             files = [p.as_posix() for p in self.cdir.glob("*/static_cells.parquet")]
-            self._mem.put(key, _df(f"SELECT DISTINCT yi, xi, 1 AS _static FROM read_parquet({files})") if files else None)
-        return self._mem[key]
+            return _df(f"SELECT DISTINCT yi, xi, 1 AS _static FROM read_parquet({files})") if files else None
+        return self._mem.memo(key, compute)
 
     def static_cells(self, ids) -> set:
         out = set()
@@ -670,12 +741,12 @@ class Store:
             return {**out, "history": False}
         h = day.h
         hist = []
+        # every past year's window starts on the same calendar date (28 Feb stands in for 29 Feb) and is exactly
+        # as long as this week's, so leap days never compare 5 past days with 6 days now
         for y in range(MODIS_START.year + 1, self.end.year + 1):
-            try:
-                a = days[0].replace(year=y)
-                b = days[-1].replace(year=y + (days[-1].year - days[0].year))
-            except ValueError:  # Feb 29
-                continue
+            md = (days[0].month, days[0].day)
+            a = pd.Timestamp(y, md[0], 28 if md == (2, 29) and not calendar.isleap(y) else md[1])
+            b = a + pd.Timedelta(days=len(days) - 1)
             if b <= self.end:
                 hist.append(float(h[a:b].sum()))
         hist = np.array(hist)

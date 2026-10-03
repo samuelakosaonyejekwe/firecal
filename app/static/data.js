@@ -6,7 +6,7 @@
 (function () {
   "use strict";
   const STATIC = document.querySelector('meta[name="firecal-edition"]')?.content === "static"; // set by pipeline/static_site.py
-  const CELL = 10;
+  const { CELL, MAX_MAP_CELLS } = FireEngine.constants; // one copy of the shared parameters (engine.js)
 
   class HttpError extends Error {
     constructor(status, body) { super(body?.detail || `HTTP ${status}`); this.status = status; this.body = body; }
@@ -23,7 +23,7 @@
         return body;
       } catch (e) {
         if (!navigator.onLine && !(e instanceof HttpError))  // airplane mode, and this file isn't saved on the device
-          throw new Error("you're offline and this hasn't been saved on this device yet. Reconnect, or next time use ⤓ → Save all countries before going offline");
+          throw new Error("you're offline and this hasn't been saved on this device yet. Reconnect, or next time use Install → Save all countries for offline before going offline");
         if (i + 1 >= tries || (e instanceof HttpError && e.status < 500)) throw e;
         await new Promise((res) => setTimeout(res, 600 * 2 ** i));
       }
@@ -226,7 +226,7 @@
     return lc.countries[id]?.cells || days.map(() => 0);
   }
 
-  const MAX_DETAIL_TILES = 12, MAX_MAP_CELLS = 20000; // as Store._coarsen on the server
+  const MAX_DETAIL_TILES = 12;
   const LIVE_MAX_TILES = 60; // live tiles hold only this week's fires (a few KB each), so many fit
   // merge f×f blocks until at most `limit` squares: "mean" per 0.1° cell (history) or "sum" (live detections)
   function coarsen(cells, limit = MAX_MAP_CELLS, how = "mean", base = 1 / CELL) {
@@ -328,7 +328,7 @@
     },
     async live(bbox) {
       // as the server (Store.live): detections per 0.1° cell in view, merged only beyond 15,000 squares,
-      // coloured up to the 99th percentile; the world overview when the view needs too many tiles
+      // colored up to the 99th percentile; the world overview when the view needs too many tiles
       const lm = (await liveSource()).meta;
       const ix = await liveIndex();
       const { y0, y1, x0, x1 } = cellBounds(bbox), want = [], T = ix.tile_cells;
@@ -375,7 +375,8 @@
     const t = await placeTile(key), kx = KM * Math.cos(lat * Math.PI / 180);
     let best = null;
     for (const [name, la, lo, ai, ci, pop] of t.p) {
-      const dy = (lat - la / 1000) * KM, dx = (lon - lo / 1000) * kx, d = Math.hypot(dx, dy), score = d / pull(pop);
+      const dl = ((lon - lo / 1000 + 540) % 360) - 180; // the short way round, across the 180° line where shorter
+      const dy = (lat - la / 1000) * KM, dx = dl * kx, d = Math.hypot(dx, dy), score = d / pull(pop);
       if (!best || score < best.score) best = { score, d, dx, dy, name, region: t.a[ai], cc: t.c[ci] };
     }
     if (!best) return null;
@@ -386,6 +387,6 @@
   Static.place = Server.place = place;
 
   Static.fetchedUrls = Server.fetchedUrls = () => [...fetched];
+  Static.aoiQuery = Server.aoiQuery = aoiQuery; // the one definition (app.js uses it for links and keys)
   window.FireData = STATIC ? Static : Server;
-  window.FireData.HttpError = HttpError;
 })();

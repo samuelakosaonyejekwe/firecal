@@ -31,8 +31,8 @@ import numpy as np
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from app.analysis import Store  # noqa: E402
-from app.constants import (AQUA_START, BOX_TILE as TILE, CELL, MAP_TILE, MODIS_START, OVERVIEW,  # noqa: E402
+from app.analysis import VIIRS_GAPS, Store, layer_years, vequiv_sql  # noqa: E402
+from app.constants import (BOX_TILE as TILE, CELL, MAP_TILE, MODIS_START, OVERVIEW,  # noqa: E402
                            VIIRS_START, WEB_MAX_BOX_DEG2)
 
 DATA = pathlib.Path(os.environ.get("FIRECAL_DATA", ROOT / "data"))
@@ -50,12 +50,15 @@ def write_json(path: pathlib.Path, obj):
 
 def build_app(out: pathlib.Path, version: str):
     """Copy the web app and switch it to static mode with paths relative to the site root."""
-    shutil.copytree(STATIC, out / "static", dirs_exist_ok=True)
+    # the page, worker and manifest are written below with the site's paths and version (not copied raw)
+    shutil.copytree(STATIC, out / "static", dirs_exist_ok=True,
+                    ignore=lambda d, names: [n for n in ("index.html", "sw.js", "manifest.webmanifest") if n in names and d == str(STATIC)])
     html = (STATIC / "index.html").read_text(encoding="utf-8").replace("{{v}}", version)
     html = html.replace('"/static/', '"static/').replace('"/manifest.webmanifest"', '"manifest.webmanifest"')
     html = html.replace("<head>", '<head>\n  <meta name="firecal-edition" content="static">', 1)  # no inline script (CSP)
     (out / "index.html").write_text(html, encoding="utf-8")
-    (out / "sw.js").write_text((STATIC / "sw.js").read_text(encoding="utf-8").replace("{{v}}", version), encoding="utf-8")
+    (out / "sw.js").write_text((STATIC / "sw.js").read_text(encoding="utf-8").replace("{{v}}", version).replace("{{edition}}", "static"),
+                               encoding="utf-8")
     man = json.loads((STATIC / "manifest.webmanifest").read_text())
     man["start_url"], man["scope"], man["id"] = "./", "./", "./"
     for icon in man["icons"] + man.get("screenshots", []):
@@ -69,7 +72,7 @@ def build_app(out: pathlib.Path, version: str):
 
 def build_calendars(store: Store, out: pathlib.Path):
     for i, cid in enumerate(store.ready, 1):
-        store._mem.clear()  # each country is analysed once; don't keep its daily series around
+        store._mem.clear()  # each country is analyzed once; don't keep its daily series around
         (out / "data" / "countries").mkdir(parents=True, exist_ok=True)
         (out / "data" / "countries" / f"{cid}.json").write_bytes(store.analyze_bytes({"country": cid}))
         print(f"  calendar {i}/{len(store.ready)} {cid}", flush=True)
@@ -172,7 +175,6 @@ def build_map_layers(store: Store, out: pathlib.Path, build: pathlib.Path):
     Each country's VIIRS-equivalent fire days per (year, month, cell) go into one DuckDB table (on
     disk if it outgrows MEMORY_LIMIT); every layer is then a single aggregation over it."""
     years = list(range(MODIS_START.year, store.end.year + 1))
-    nyears = len(years)
     con = _duck(build)
     con.execute("CREATE TABLE cm (cid VARCHAR, y SMALLINT, m TINYINT, xi SMALLINT, yi SMALLINT, val DOUBLE)")
     for cid in store.ready:
@@ -180,12 +182,12 @@ def build_map_layers(store: Store, out: pathlib.Path, build: pathlib.Path):
         k, kt = h["k_all"] or 1.0, h["k_terra_all"] or 1.0
         con.execute(f"""
             INSERT INTO cm SELECT '{cid}', year(d), month(d), xi, yi,
-                   sum(CASE WHEN d >= DATE '{VIIRS_START.date()}' THEN (s = 1)::INT * 1.0
-                            WHEN d >= DATE '{AQUA_START.date()}' THEN (s = 0)::INT * {k}
-                            ELSE (s = 2)::INT * {kt} END) AS val
-            FROM '{store.path(cid).as_posix()}' GROUP BY ALL HAVING val > 0""")
-    layers = [("all", "true", nyears)] + [(f"y{y}", f"y = {y}", 1) for y in years] + \
-             [(f"m{m:02d}", f"m = {m}", nyears) for m in range(1, 13)]
+                   sum({vequiv_sql(k, kt)}) AS val
+            FROM '{store.path(cid).as_posix()}' WHERE d <= DATE '{store.end.date()}'  -- the record's end (analysis.Store.end)
+            GROUP BY ALL HAVING val > 0""")
+    # multi-year layers: mean per year over the years that hold the month, or the record's length (as the server)
+    layers = [("all", "true", layer_years(None, store.end))] + [(f"y{y}", f"y = {y}", 1) for y in years] + \
+             [(f"m{m:02d}", f"m = {m}", layer_years(m, store.end)) for m in range(1, 13)]
     done = 0
     for key, where, norm in layers:
         # per country sum over the layer's period, then the larger value where borders share a cell
@@ -227,7 +229,9 @@ def build_meta(store: Store, out: pathlib.Path, version: str):
                       for c in sorted(store.meta.values(), key=lambda c: c["name"])],
         "range": {"start": MODIS_START.date().isoformat(), "end": store.end.date().isoformat(),
                   "viirs_start": VIIRS_START.date().isoformat()},
-        "prior": {"k_world": pm, "k_terra_world": pt}, "max_box_deg2": WEB_MAX_BOX_DEG2, "jobs": {},
+        # the browser engine analyzes drawn boxes with the same prior and VIIRS outage days as the server
+        "prior": {"k_world": pm, "k_terra_world": pt, "viirs_gaps": [d.date().isoformat() for d in VIIRS_GAPS]},
+        "max_box_deg2": WEB_MAX_BOX_DEG2, "jobs": {},
     })
 
 
@@ -237,8 +241,12 @@ def main():
     ap.add_argument("--build", default="build")
     args = ap.parse_args()
     out, build = pathlib.Path(args.out), pathlib.Path(args.build)
+    marker = ".firecal-site"  # written first, so an interrupted build can be replaced too
+    if out.exists() and any(out.iterdir()) and not ((out / marker).exists() or (out / "data" / "meta.json").exists()):
+        sys.exit(f"{out} is not empty and is not a FireCal site; refusing to replace it (choose another --out)")
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
+    (out / marker).write_text("")
     store = Store(DATA, RES)
     if not store.ready:
         sys.exit("no processed countries in data/countries")

@@ -31,7 +31,7 @@ from shapely.geometry import shape
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from app.constants import CELL, MAP_TILE  # noqa: E402
-from app.feeds import newest  # noqa: E402
+from app.feeds import download, newest  # noqa: E402
 
 MAX_OVERVIEW = 15000
 
@@ -39,7 +39,7 @@ MAX_OVERVIEW = 15000
 def fetch_cells(url: str) -> pd.DataFrame:
     with tempfile.TemporaryDirectory() as tmp:
         csv = pathlib.Path(tmp) / "feed.csv"
-        urllib.request.urlretrieve(url, csv)
+        download(url, csv)
         return cells_from_csv(csv)
 
 
@@ -74,7 +74,10 @@ def main():
     out = site / "data" / "live"
 
     try:
-        url, first, size = newest()  # whichever NASA server has the newest data (app/feeds.py)
+        old_meta = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
+        known = ((old_meta["source_bytes"], dt.datetime.fromisoformat(old_meta["source_last_modified"]))
+                 if old_meta.get("source_bytes") and old_meta.get("source_last_modified") else None)
+        url, first, size = newest(known=known)  # whichever NASA server has the newest data (app/feeds.py)
         cells = None if not args.force and _unchanged(out, first, size) else fetch_cells(url)
     except Exception as e:
         if not args.keep_from:

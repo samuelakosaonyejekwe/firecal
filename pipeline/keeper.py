@@ -31,7 +31,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from app.feeds import newest  # noqa: E402
 from pipeline.sync import WORKFLOW, gh, github_available  # noqa: E402
 
-WATCHER = "live.yml" # the cloud watcher workflow
+WATCHER = "live.yml"  # the cloud watcher workflow
 WORLD = "world.yml"  # the cloud world build
 INTERVAL = 15 * 60   # seconds between checks on this computer
 WATCH_EVERY = 5 * 60 # seconds between checks in the cloud watcher
@@ -41,10 +41,10 @@ COOLDOWN = 30        # minutes between rebuild requests from the keeper
 ACTIVE = ("queued", "in_progress", "waiting", "pending", "requested")
 
 
-def nasa_state() -> tuple[dt.datetime, int]:
+def nasa_state(known: tuple[int, dt.datetime] | None = None) -> tuple[dt.datetime, int]:
     """(when NASA first published its current data, the file's size). The size identifies the data:
     NASA's servers sometimes re-stamp an unchanged file, so times alone can't say whether it's new."""
-    _, first, size = newest()
+    _, first, size = newest(known=known)
     return first, size
 
 
@@ -95,12 +95,15 @@ def ensure_watcher() -> str | None:
 
 
 def ensure_schedule_enabled() -> str | None:
-    """GitHub disables scheduled workflows after 60 days without repository activity; switch it back on."""
-    state = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/actions/workflows/{WORKFLOW}"))["state"]
-    if state != "active":
-        gh("workflow", "enable", WORKFLOW)
-        return f"website schedule was {state}; re-enabled it"
-    return None
+    """GitHub disables scheduled workflows after 60 days without repository activity, and a disabled workflow
+    can't be started at all; switch the website build, the watcher and the world build back on."""
+    notes = []
+    for wf, what in ((WORKFLOW, "website"), (WATCHER, "watcher"), (WORLD, "world build")):
+        state = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/actions/workflows/{wf}"))["state"]
+        if state != "active":
+            gh("workflow", "enable", wf)
+            notes.append(f"{what} schedule was {state}; re-enabled it")
+    return "; ".join(notes) or None
 
 
 def check_once(last_request: dt.datetime | None = None, grace: int = GRACE) -> tuple[str, dt.datetime | None]:
@@ -118,8 +121,8 @@ def check_once(last_request: dt.datetime | None = None, grace: int = GRACE) -> t
 
 def _check_freshness(last_request: dt.datetime | None, grace: int = GRACE) -> tuple[str, dt.datetime | None]:
     now = dt.datetime.now(dt.timezone.utc)
-    nasa, nasa_bytes = nasa_state()
     site, site_bytes = website_state(website_url())
+    nasa, nasa_bytes = nasa_state((site_bytes, site) if site and site_bytes else None)  # newer content on either server wins
     if site and (site_bytes == nasa_bytes or site >= nasa):  # same file, or nothing newer
         return f"website is current (NASA {site:%H:%M} UTC)", last_request
     if now - nasa < dt.timedelta(minutes=grace):

@@ -20,8 +20,13 @@ const niceDate = (iso, year = true) => new Date(iso + "T00:00:00Z").toLocaleDate
 const quantile = (arr, q) => { const a = arr.filter((v) => v != null && isFinite(v)).sort((x, y) => x - y); return a.length ? a[Math.min(a.length - 1, Math.floor(q * a.length))] : 0; };
 const ramp = () => ["--q0", "--q1", "--q2", "--q3", "--q4", "--q5", "--q6"].map(css);
 const diverging = () => ["--d-2", "--d-1", "--d0", "--d1", "--d2"].map(css);
-const lat = (v) => `${Math.abs(v).toFixed(1)}°${v < 0 ? "S" : "N"}`;
-const lon = (v) => `${Math.abs(v).toFixed(1)}°${v < 0 ? "W" : "E"}`;
+const lat = (v, dp = 1) => `${Math.abs(v).toFixed(dp)}°${v < 0 ? "S" : "N"}`;
+const lon = (v, dp = 1) => `${Math.abs(v).toFixed(dp)}°${v < 0 ? "W" : "E"}`;
+// how to describe a map square of `d` degrees: 0.1° cells, or merged blocks when the map is zoomed out
+const squareWords = (d = 0.1) => {
+  const km = Math.round(d * 111), cell = d <= 0.1 + 1e-9;
+  return { km, cell, square: `this ≈ ${km} km square`, spot: cell ? "this ≈ 11 km square" : `an average ≈ 11 km spot in this ≈ ${km} km square` };
+};
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const ordinal = (n) => { n = Math.round(n); const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
 const kfmt = (v) => (Math.abs(v) >= 1e6 ? `${v / 1e6}M` : Math.abs(v) >= 1000 ? `${v / 1000}k` : v);
@@ -49,7 +54,7 @@ function toast(msg, ms = 2600) { // plain text (never HTML)
 }
 
 // ───────────────────────── area of interest ─────────────────────────
-const aoiQuery = (a) => (a.country ? `country=${encodeURIComponent(a.country)}` : `bbox=${a.bbox.join(",")}`);
+const aoiQuery = (a) => FireData.aoiQuery(a);
 const aoiKey = (a) => (a ? aoiQuery(a) : "");
 
 // a country id or name from a link, in any letter case or spacing ("cyprus", "United States", "United_States")
@@ -81,10 +86,12 @@ function aoiFromHash() {
 }
 
 const aoiView = (a) => (a.bbox ? a.bbox : state.byId[a.country]?.view);
+// the results on screen belong to the area selected now (not to the previous one while a new area loads or fails)
+const shown = () => !!state.data && state.dataKey === aoiKey(state.aoi);
 
 function selectAOI(a, { fly = true } = {}) {
   if (!a) return;
-  if (aoiKey(a) === aoiKey(state.aoi) && state.data) return;
+  if (aoiKey(a) === aoiKey(state.aoi) && (shown() || state.loadingKey === aoiKey(a))) return; // already shown or on its way
   state.aoi = a;
   history.replaceState(null, "", `#${aoiQuery(a)}`);
   store.set("firecal-aoi", aoiQuery(a));
@@ -167,18 +174,18 @@ function initMap() {
     html += `${html ? "<br>" : ""}<span class="tip-place loading" data-at="${at.lat},${at.lon}" data-ctry="${esc(ctry?.properties.name || "")}">…</span>`;
     if (cell) {
       const p = cell.properties;
-      const word = scaleWord(p.v);
-      if (cell.layer.id === "live") {
+      const word = scaleWord(p.v), sq = squareWords(+p.d);
+      if (cell.layer.id === "live") { // merged blocks hold the sum of their 0.1° cells' detections
         html += `<br><b>${fmt(p.v)} detection${p.v === 1 ? "" : "s"}</b> in the last 7 days${word ? ` · ${word}` : ""}`;
-        html += `<br><span class="muted">times satellites saw fire in this ≈ 11 km square this week</span>`;
-      } else {
+        html += `<br><span class="muted">times satellites saw fire in ${sq.square} this week</span>`;
+      } else { // merged blocks hold the mean of their 0.1° cells
         const y = $("mapYear").value, m = +$("mapMonth").value, v = fmt(p.v, 1);
-        const [head, line] = y !== "all" ? [`${v} fire days in ${y}`, `satellites saw fire in this ≈ 11 km square on ${v} days of ${y}`]
-          : m ? [`${v} fire days in ${MONTHS_LONG[m - 1]}, per year`, `on average each year since 2000, satellites saw fire in this ≈ 11 km square on ${v} days of ${MONTHS_LONG[m - 1]}`]
-          : [`${v} fire days a year`, `on average since 2000, satellites saw fire in this ≈ 11 km square on ${v} days each year`];
+        const [head, line] = y !== "all" ? [`${v} fire days in ${y}`, `satellites saw fire in ${sq.spot} on ${v} days of ${y}`]
+          : m ? [`${v} fire days in ${MONTHS_LONG[m - 1]}, per year`, `on average each year since 2000, satellites saw fire in ${sq.spot} on ${v} days of ${MONTHS_LONG[m - 1]}`]
+          : [`${v} fire days a year`, `on average since 2000, satellites saw fire in ${sq.spot} on ${v} days each year`];
         html += `<br><b>${head}</b>${word ? ` · ${word}` : ""}<br><span class="muted">${line}</span>`;
       }
-      html += `<br><span class="muted">${lat(p.lat)}, ${lon(p.lon)}</span>`;
+      html += `<br><span class="muted">${lat(p.lat, 2)}, ${lon(p.lon, 2)}</span>`;
     }
     return { html, at, ctry: ctry && { id: ctry.properties.id, name: ctry.properties.name },
              spot: cell && { lat: +cell.properties.lat, lon: +cell.properties.lon } };
@@ -289,7 +296,7 @@ async function refreshLayer() {
       if (token !== refreshLayer.token) return;
       const d = g.cell;
       map.getSource("live").setData({ type: "FeatureCollection", features: g.cells.map(([xi, yi, v]) => ({
-        type: "Feature", properties: { v, lat: yi * d, lon: xi * d },
+        type: "Feature", properties: { v, lat: (yi + 0.5) * d, lon: (xi + 0.5) * d, d }, // the square's centre and size
         geometry: { type: "Point", coordinates: [(xi + 0.5) * d, (yi + 0.5) * d] } })) });
       const max = Math.max(g.max, 2), r = ramp();
       map.setPaintProperty("live", "circle-color", ["interpolate", ["linear"], ["get", "v"], 1, r[3], max, r[6]]);
@@ -299,15 +306,15 @@ async function refreshLayer() {
       const days = g.days?.length ? `${niceDate(g.days[0], false)} – ${niceDate(g.days[g.days.length - 1])}` : "";
       mapScale = { max, words: ["few", "some", "many", "very many"] };
       $("mapLegend").innerHTML = mapLegend(r.slice(3), mapScale.words, "1", `${fmt(max)}+`,
-        `VIIRS detections per 0.1° cell · ${days}`,
-        "<b>Brighter = more fire.</b> Each dot is a ≈ 11 km square, coloured by how many times satellites detected fire there in the last 7 days (provisional data).");
+        `VIIRS detections per ${squareWords(d).cell ? "0.1° cell" : `${fmt(d, 1)}° square`} · ${days}`,
+        `<b>Brighter = more fire.</b> Each dot is a ≈ ${squareWords(d).km} km square, colored by how many times satellites detected fire there in the last 7 days (provisional data).`);
     } else {
       const y = $("mapYear").value, m = +$("mapMonth").value;
       const g = await FireData.grid(vb, y !== "all" ? +y : null, m || null, zoom);
       if (token !== refreshLayer.token) return;
       const d = g.cell;
       map.getSource("cells").setData({ type: "FeatureCollection", features: g.cells.map(([xi, yi, v]) => ({
-        type: "Feature", properties: { v, lat: yi * d, lon: xi * d },
+        type: "Feature", properties: { v, lat: (yi + 0.5) * d, lon: (xi + 0.5) * d, d }, // the square's centre and size
         geometry: { type: "Polygon", coordinates: [[[xi * d, yi * d], [(xi + 1) * d, yi * d], [(xi + 1) * d, (yi + 1) * d], [xi * d, (yi + 1) * d], [xi * d, yi * d]]] } })) });
       const max = Math.max(g.max, 0.5), r = ramp();
       const stops = r.slice(1).flatMap((c, i) => [(max * (i + 1)) / (r.length - 1), c]);
@@ -316,9 +323,9 @@ async function refreshLayer() {
       $("mapLegend").innerHTML = g.cells.length
         ? mapLegend(r, mapScale.words, "0", `${fmt(max, 1)}+`,
             y !== "all" ? `fire days in ${y}` : m ? `fire days per year in ${MONTHS_LONG[m - 1]}` : "fire days per year",
-            `<b>Brighter = burns more often.</b> Each square (0.1°, ≈ 11 km) is coloured by how many days ${
+            `<b>Brighter = burns more often.</b> Each square (${squareWords(d).cell ? "0.1°, ≈ 11 km" : `${fmt(d, 1)}°, ≈ ${squareWords(d).km} km: the average of its 0.1° cells`}) is colored by how many days ${
               y !== "all" ? `in ${esc(y)}` : m ? `of ${MONTHS_LONG[m - 1]}, on average each year,` : "a year, on average since 2000,"
-            } satellites saw fire there; one worldwide scale, so colours compare across the globe.`)
+            } satellites saw fire there; one worldwide scale, so colors compare across the globe.`)
         : FireData.mode === "static" ? `<span>No recorded fires in this view for the selected period.</span>`
         : `<span>No history loaded in this view yet. Click a country to load it, or switch to <b>Live</b> for this week's fires worldwide.</span>`;
     }
@@ -331,7 +338,7 @@ async function refreshLayer() {
 let mapScale = null;
 const scaleWord = (v) => mapScale ? mapScale.words[Math.min(mapScale.words.length - 1, Math.floor((v / mapScale.max) * mapScale.words.length))] : "";
 
-// map legend: the colour bar with plain words along it, the numbers at its ends, and one line of explanation
+// map legend: the color bar with plain words along it, the numbers at its ends, and one line of explanation
 function mapLegend(colors, words, lo, hi, unit, explain) {
   return `<div class="mlegend">
     <div class="mbar" style="background:linear-gradient(90deg,${colors.join(",")})"></div>
@@ -366,7 +373,7 @@ function areaAround({ lat: y, lon: x }) {
 const isShown = (ctry) => !!ctry && state.aoi?.country === ctry.id; // that country's results are on screen now
 function clickHint(info) { // mouse: what a click opens
   if (isShown(info.ctry)) return info.spot ? `Click to analyze this area (≈ 55 km) · ${esc(info.ctry.name)} is shown now`
-    : `${esc(info.ctry.name)} is shown now · click a coloured square to analyze just that area`;
+    : `${esc(info.ctry.name)} is shown now · click a colored square to analyze just that area`;
   if (info.ctry && info.spot) return `Click to analyze ${esc(info.ctry.name)} · Shift-click: just this area`;
   if (info.ctry) return `Click to analyze ${esc(info.ctry.name)}`;
   return "Click to analyze this area";
@@ -405,10 +412,11 @@ function fillPlace() {
 function pinTip(ev, html, ctry, spot) { // touch: the card stays, with buttons
   const t = $("tip");
   tipPinned = true; t.classList.add("pinned");
+  t.setAttribute("aria-live", "polite"); // a tapped card is read out; hover cards stay silent
   const offer = ctry && !isShown(ctry); // no button that would only re-open the country already on screen
   const buttons = (offer ? `<button type="button" class="tip-go">Analyze ${esc(ctry.name)}</button>` : "") +
     (spot ? `<button type="button" class="tip-area${offer ? " ghost" : ""}">Analyze this area <span class="muted">(≈ 55 km)</span></button>` : "");
-  if (isShown(ctry)) html += `<br><span class="muted">${esc(ctry.name)} is shown now${spot ? "" : " · tap a coloured square to analyze just that area"}</span>`;
+  if (isShown(ctry)) html += `<br><span class="muted">${esc(ctry.name)} is shown now${spot ? "" : " · tap a colored square to analyze just that area"}</span>`;
   showTip(ev, `<button type="button" class="tip-x ghost" aria-label="Close">✕</button>${html}` +
     (buttons ? `<div class="tip-actions">${buttons}</div>` : ""));
   t.querySelector(".tip-x").onclick = hideTip;
@@ -418,7 +426,7 @@ function pinTip(ev, html, ctry, spot) { // touch: the card stays, with buttons
   if (area) area.onclick = () => { hideTip(); selectAOI(areaAround(spot)); };
 }
 function hideTip() {
-  const t = $("tip"); t.style.display = "none"; t.classList.remove("pinned"); tipPinned = false;
+  const t = $("tip"); t.style.display = "none"; t.classList.remove("pinned"); t.removeAttribute("aria-live"); tipPinned = false;
   map?.getLayer("countries-hover") && map.setFilter("countries-hover", ["==", ["get", "id"], ""]);
 }
 // a tap anywhere outside the pinned card closes it
@@ -427,6 +435,7 @@ document.addEventListener("pointerdown", (ev) => { if (tipPinned && !$("tip").co
 // ───────────────────────── loading an AOI ─────────────────────────
 function setBusy(on, msg) {
   $("content").setAttribute("aria-busy", String(on));
+  if (!on) state.loadingKey = null;
   if (msg) $("loading").innerHTML = `<div class="loading-box">${msg}</div>`;
   if (!on) syncNav();
 }
@@ -439,7 +448,8 @@ function banner(html, kind = "info") {
 
 async function loadAOI() {
   const a = state.aoi, token = ++state.req;
-  const name = a.country ? state.byId[a.country].name : `${lat(a.bbox[1])} – ${lat(a.bbox[3])}, ${lon(a.bbox[0])} – ${lon(a.bbox[2])}`;
+  state.loadingKey = aoiKey(a);
+  const name = a.country ? state.byId[a.country].name : `${lat(a.bbox[1])}–${lat(a.bbox[3])}, ${lon(a.bbox[0])}–${lon(a.bbox[2])}`; // as the results title
   $("aoiTitle").textContent = name; $("navArea").textContent = name;
   $("aoiSub").textContent = a.country ? "Country" : "Custom area";
   banner(null);
@@ -449,7 +459,7 @@ async function loadAOI() {
   if (a.bbox) {
     const area = (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]);
     if (area > FireData.maxBoxDeg2) {
-      setBusy(false); $("results").hidden = true; state.nowLoading = false; renderNowcast();
+      setBusy(false); $("results").hidden = true; state.data = null; state.nowLoading = false; renderNowcast();
       banner(`This box covers ${fmt(area)} square degrees; the largest custom area here is ${fmt(FireData.maxBoxDeg2)} (about ${fmt(Math.sqrt(FireData.maxBoxDeg2))}° × ${fmt(Math.sqrt(FireData.maxBoxDeg2))}°). Draw a smaller box, or pick a country for larger regions.`, "warn");
       return;
     }
@@ -477,7 +487,7 @@ async function loadAOI() {
       } else prepare(data.missing.map((m) => m.id), token);
       return;
     }
-    state.data = data;
+    state.data = data; state.dataKey = aoiKey(a);
     showResults();
     if (FireData.mode === "static") loadNowcast(a, token, data);
     if (data.missing.length && FireData.mode === "static") {
@@ -490,7 +500,7 @@ async function loadAOI() {
     setBusy(false);
   } catch (e) {
     if (token !== state.req) return;
-    $("results").hidden = true;
+    $("results").hidden = true; state.data = null;
     setBusy(false); state.nowLoading = false; renderNowcast();
     banner(`Could not analyze this area: ${esc(e.message)} <button type="button" id="retry">Retry</button>`, "error");
     $("retry").onclick = () => { state.data = null; loadAOI(); };
@@ -523,7 +533,7 @@ async function prepare(ids, token) {
       ${rows.map((r) => `<div class="progress"><span>${esc(state.byId[r.id]?.name || r.id)}</span>
         <span class="pbar" role="progressbar" aria-valuenow="${r.pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${r.pct}%"></i></span><span class="pstate">${esc(label(r.j))}</span></div>`).join("")}`, failed.length ? "error" : "info");
     if (done) {
-      await loadMeta();
+      try { await loadMeta(); } catch (e) { banner(`Loaded, but the country list couldn't be refreshed: ${esc(e.message)}. Reload the page.`, "error"); return; }
       if (failed.length) banner(`Could not load ${failed.map((f) => esc(state.byId[f.id]?.name)).join(", ")}: ${esc(failed[0].j.message)}`, "error");
       if (failed.length < rows.length) { state.data = null; loadAOI(); refreshLayer(); }
       return;
@@ -541,7 +551,7 @@ async function loadNowcast(a, token, cal) {
   } catch (_) { state.now = null; }
   state.nowLoading = false;
   renderNowcast();
-  if (state.data) renderBriefing();
+  if (shown()) renderBriefing(); // never this week's figures for one area with another area's history
 }
 
 function showResults() {
@@ -683,9 +693,10 @@ function chart(id) {
 }
 
 function sourceOf(iso) {
-  const p = state.data.harmonization.periods;
+  const h = state.data.harmonization, p = h.periods;
   if (iso < p[1].from) return "MODIS Terra only × k";
   if (iso < p[2].from) return "MODIS Terra+Aqua × k";
+  if (h.viirs_gaps?.includes(iso)) return "MODIS Terra+Aqua × k (VIIRS outage)";
   return "VIIRS S-NPP";
 }
 function sensorTag(year) {
@@ -707,7 +718,7 @@ function nowStatus(n) {
 function renderNowcast() {
   const n = state.now;
   if (state.nowLoading) { // reserve the card's space so the page doesn't jump when live data lands
-    $("nowCard").hidden = false; $("nowCard").classList.add("is-loading");
+    $("nowCard").hidden = false;
     $("nowCard").style.setProperty("--now-c", css("--accent"));
     $("nowSub").innerHTML = `<span class="spinner"></span>Checking this week's live NASA fire detections…`;
     $("nowStatus").innerHTML = "";
@@ -715,7 +726,6 @@ function renderNowcast() {
     $("nowBars").innerHTML = Array.from({ length: 6 }, () => `<div class="nb"><b>&nbsp;</b><i class="skel" style="height:40%"></i><span>&nbsp;</span></div>`).join("");
     syncNav(); return;
   }
-  $("nowCard").classList.remove("is-loading");
   if (!n || !n.available) { $("nowCard").hidden = true; syncNav(); return; }
   $("nowCard").hidden = false; syncNav();
   const d0 = n.days[0], d1 = n.days[n.days.length - 1];
@@ -741,9 +751,10 @@ function renderNowcast() {
 // ───────────────────────── KPIs ─────────────────────────
 function confidenceIssues(h) { // why results are "indicative only" (mirrors low_counts in analysis.py)
   const out = [];
-  if (h.overlap_viirs_cell_days < 3000) out.push({ short: "few fires", long: `only ${fmt(h.overlap_viirs_cell_days)} VIIRS fire cell-days in the 2012+ overlap years, so the calibration leans on the worldwide ratio` });
-  if (h.r2_monthly == null || h.r2_monthly < 0.5) out.push({ short: "noisy monthly fit", long: `the month-by-month fit is weak (R² ${h.r2_monthly ?? "n/a"})` });
-  if (h.cv_median_ape == null || h.cv_median_ape > 15) out.push({ short: "large test error", long: `predicting held-out years misses by ${h.cv_median_ape ?? "an unknown"}% (median)` });
+  const K = FireEngine.constants;
+  if (h.overlap_viirs_cell_days < K.MIN_OVERLAP_CELL_DAYS) out.push({ short: "few fires", long: `only ${fmt(h.overlap_viirs_cell_days)} VIIRS fire cell-days in the 2012+ overlap years, so the calibration leans on the worldwide ratio` });
+  if (h.r2_monthly == null || h.r2_monthly < K.MIN_R2) out.push({ short: "noisy monthly fit", long: `the month-by-month fit is weak (R² ${h.r2_monthly ?? "n/a"})` });
+  if (h.cv_median_ape == null || h.cv_median_ape > K.MAX_CV_ERROR) out.push({ short: "large test error", long: `predicting held-out years misses by ${h.cv_median_ape ?? "an unknown"}% (median)` });
   return out;
 }
 
@@ -836,7 +847,7 @@ function renderBriefing() {
       trend != null ? li(`<b>Trend:</b> ${signed(trend, 1)}% per decade in annual fire cell-days (OLS, ${yr.years[0]}–${yr.years[yr.years.length - 1]}).`) : "",
       FireData.mode === "server"
         ? li(`<b>Reuse:</b> download the daily series (CSV) or query <code>api/calendar?${esc(aoiQuery(state.aoi))}</code>. <a href="docs" target="_blank" rel="noopener">API docs</a>.`)
-        : li(`<b>Reuse:</b> download the daily series (CSV)${state.aoi.country ? `, or the full analysis as <a href="data/countries/${encodeURIComponent(state.aoi.country)}.json" target="_blank" rel="noopener">JSON</a>` : " (this area was analysed in your browser from the raw 0.1° fire records)"}. Source code: <a href="https://github.com/samuelakosaonyejekwe/firecal" target="_blank" rel="noopener">GitHub</a>.`),
+        : li(`<b>Reuse:</b> download the daily series (CSV)${state.aoi.country ? `, or the full analysis as <a href="data/countries/${encodeURIComponent(state.aoi.country)}.json" target="_blank" rel="noopener">JSON</a>` : " (this area was analyzed in your browser from the raw 0.1° fire records)"}. Source code: <a href="https://github.com/samuelakosaonyejekwe/firecal" target="_blank" rel="noopener">GitHub</a>.`),
     ],
   };
   $("briefList").className = `brief ${state.audience}`;
@@ -873,8 +884,8 @@ function renderCalendar() {
     $("dailyCard").scrollIntoView({ behavior: "smooth", block: "center" });
   });
   $("calSub").textContent = zMode
-    ? "How unusual each month was vs its long-term normal (σ). Tap a row to open that year day by day."
-    : "Fire cell-days per month, VIIRS-equivalent. T = Terra, T+A = Terra+Aqua, V = VIIRS. Tap a row to open that year.";
+    ? "How unusual each month was vs its long-term normal (σ). Tap a month to open that year day by day."
+    : "Fire cell-days per month, VIIRS-equivalent. T = Terra, T/A = Terra (Aqua from mid-year), T+A = Terra+Aqua, V = VIIRS. Tap a month to open that year.";
   $("calLegend").innerHTML = zMode ? rampLegend(colors, "−3σ less", "+3σ more", "burning vs normal for that month")
                                    : rampLegend(colors, "0", `${fmt(vmax)}+`, "fire cell-days per month");
 }
@@ -927,9 +938,9 @@ function renderProfile() {
   if (!s) return;
   const i0 = Math.round((new Date(s.from) - new Date(d.daily.start)) / 864e5);
   const byKey = {};
-  for (let i = 0; i < 366; i++) {
-    const iso = isoOf(addDays(d.daily.start, i0 + i));
-    if (iso.slice(5) !== "02-29") byKey[iso.slice(5)] = d.daily.h7[i0 + i];
+  for (let i = 0; i < 366; i++) { // one season: 365 days (366 in leap years, whose 29 Feb has no slot)
+    const iso = isoOf(addDays(d.daily.start, i0 + i)), k = iso.slice(5);
+    if (k !== "02-29" && !(k in byKey)) byKey[k] = d.daily.h7[i0 + i]; // day 366 of a 365-day season is the next one's first
   }
   const sel = keys.map((k) => byKey[k] ?? null);
   const label = (k) => `${+k.slice(3)} ${MONTHS[+k.slice(0, 2) - 1]}`;
@@ -985,7 +996,8 @@ function renderDaily() {
       const [iso, h, i] = p.data;
       return `<b>${niceDate(iso)}</b><br>Harmonized: <b>${fmt(h, 1)}</b> fire cell-days<br>` +
              `MODIS raw: ${fmt(dd.m[i])} · VIIRS raw: ${dd.v[i] == null ? "n/a" : fmt(dd.v[i])}<br>` +
-             `FRP: ${fmt(dd.frp[i])} MW<br><span style="color:${muted}">Source: ${sourceOf(iso)}</span>`; } },
+             // fire radiative power is in the server's records only; the website's 0.1° tiles for drawn boxes don't carry it
+             `${dd.frp[i] != null ? `FRP: ${fmt(dd.frp[i])} MW<br>` : ""}<span style="color:${muted}">Source: ${sourceOf(iso)}</span>`; } },
     series: [{ type: "heatmap", coordinateSystem: "calendar", data }],
   }, true);
 }
@@ -1093,12 +1105,12 @@ const RENDER = { calendar: renderCalendar, profile: renderProfile, daily: render
 
 // ───────────────────────── export / share / help ─────────────────────────
 function downloadCSV() {
-  if (!state.data) return;
+  if (!shown()) { toast("Wait for this area's results first"); return; }
   const d = state.data.daily;
   const rows = ["date,modis_cell_days,viirs_cell_days,harmonized_cell_days,frp_mw,source"];
   for (let i = 0; i < d.h.length; i++) {
     const iso = isoOf(addDays(d.start, i));
-    rows.push([iso, d.m[i], d.v[i] ?? "", d.h[i], d.frp[i], sourceOf(iso)].join(","));
+    rows.push([iso, d.m[i], d.v[i] ?? "", d.h[i], d.frp[i] ?? "", sourceOf(iso)].join(",")); // frp_mw empty where not recorded
   }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" }));
@@ -1112,10 +1124,11 @@ async function share() {
   try {
     if (navigator.share && matchMedia("(pointer: coarse)").matches) await navigator.share({ title: `FireCal: ${$("aoiTitle").textContent}`, url });
     else { await navigator.clipboard.writeText(url); toast("Link copied: anyone can open this exact view"); }
-  } catch (_) { toast(url); }
+  } catch (e) { if (e?.name !== "AbortError") toast(url); } // cancelling the share sheet is not an error
 }
 
 function printReport() {
+  if (!shown()) { toast("Wait for this area's results first"); return; }
   markAllDirty();
   // render every chart before printing (lazy ones may be off-screen)
   for (const id of Object.keys(renderers)) { try { renderers[id](); } catch (_) {} }
@@ -1131,7 +1144,8 @@ function locateMe() {
       if (r.country) selectAOI({ country: r.country });
       else {
         const { longitude: x, latitude: y } = p.coords;
-        selectAOI({ bbox: [x - 1, y - 1, x + 1, y + 1].map((v) => Math.round(v * 10) / 10) });
+        const r1 = (v, lo, hi) => Math.min(hi, Math.max(lo, Math.round(v * 10) / 10)); // inside the map's limits, as links are
+        selectAOI({ bbox: [r1(x - 1, -180, 180), r1(y - 1, -90, 90), r1(x + 1, -180, 180), r1(y + 1, -90, 90)] });
       }
     } catch (e) { toast(`Could not look up your location: ${e.message}`); }
   }, () => toast("Location permission denied"), { timeout: 10000 });
@@ -1173,9 +1187,9 @@ function openInstall() {
   $("installSteps").innerHTML = installSteps();
   const btn = $("doInstall");
   if (btn) btn.onclick = async () => {
-    installPrompt.prompt();
-    const { outcome } = await installPrompt.userChoice.catch(() => ({}));
-    if (outcome === "accepted") installPrompt = null;
+    const ask = installPrompt;
+    installPrompt = null; $("installBtn").classList.remove("ready"); // a prompt works once; the browser offers a new one later
+    try { await ask.prompt(); await ask.userChoice; } catch (_) { /* dismissed or no longer available */ }
     $("installSteps").innerHTML = installSteps();
   };
   const local = FireData.mode !== "static";
@@ -1187,7 +1201,8 @@ function openInstall() {
 
 async function offlineCount() { // countries whose calendar is saved on this device
   try {
-    const keys = await (await caches.open("firecal-data-v2")).keys();
+    const name = (await caches.keys()).find((k) => k.startsWith("firecal-data-")); // the worker's data cache (sw.js DATA)
+    const keys = name ? await (await caches.open(name)).keys() : [];
     return new Set(keys.map((r) => decodeURIComponent(new URL(r.url).pathname)).filter((p) => p.includes("/data/countries/"))).size;
   } catch (_) { return null; }
 }
@@ -1223,7 +1238,6 @@ async function saveOffline() {
 function updateNetwork() {
   const off = !navigator.onLine;
   $("offlineChip").hidden = !off;
-  document.documentElement.classList.toggle("is-offline", off);
   if (off) offlineCount().then((n) => { $("offlineChip").title = n != null ? `Offline: showing data saved on this device (${n} countries saved)` : "Offline: showing saved data"; });
 }
 
@@ -1247,6 +1261,10 @@ async function loadMeta() {
   $("countryList").innerHTML = state.meta.countries.map((c) => `<option value="${esc(c.name)}"></option>`).join("");
   renderReadyCount();
   styleCountries();
+  // the map's years follow the record (it grows when every country has a new NASA year), keeping the choice
+  const y1 = +state.meta.range.end.slice(0, 4), was = $("mapYear").value;
+  $("mapYear").innerHTML = `<option value="all">All years (mean)</option>` + Array.from({ length: y1 - 2000 + 1 }, (_, i) => `<option>${y1 - i}</option>`).join("");
+  if ([...$("mapYear").options].some((o) => o.value === was)) $("mapYear").value = was;
 }
 
 function renderReadyCount() {
@@ -1260,27 +1278,30 @@ function renderReadyCount() {
 FireData.onLiveUpdate?.((live) => {
   if (!state.meta) return;
   state.meta.live = live; renderReadyCount();
-  if (state.data && state.aoi) loadNowcast(state.aoi, state.req, state.data);
+  if (shown()) loadNowcast(state.aoi, state.req, state.data);
   if (state.layer === "live") refreshLayer();
 });
 
 async function init() {
   const t = store.get("firecal-theme");
   if (t) document.documentElement.dataset.theme = t;
+  $("theme").setAttribute("aria-pressed", String(isDark()));
   setupLazy();
   setupNav();
   try {
     await loadMeta();
   } catch (e) {
-    setBusy(true, `<b>The FireCal server isn't running.</b>
+    setBusy(true, (FireData.mode === "server"
+      ? `<b>The FireCal server isn't running.</b>
       <p>Start it from the project folder, then press Retry:</p>
-      <code>./start.sh</code>
-      <p class="hint">Details: ${esc(e.message)}</p>
-      <button type="button" onclick="location.reload()">Retry</button>`);
+      <code>./start.sh</code>`
+      : `<b>FireCal couldn't load its data.</b>
+      <p>${navigator.onLine ? "The website didn't answer; try again in a moment." : "You're offline and this device has no saved copy yet; connect once and FireCal will work offline afterwards."}</p>`) +
+      `<p class="hint">Details: ${esc(e.message)}</p>
+      <button type="button" id="metaRetry">Retry</button>`);
+    $("metaRetry").onclick = () => location.reload(); // (no inline handlers: the page's security policy forbids them)
     return;
   }
-  const y1 = +state.meta.range.end.slice(0, 4);
-  $("mapYear").innerHTML = `<option value="all">All years (mean)</option>` + Array.from({ length: y1 - 2000 + 1 }, (_, i) => `<option>${y1 - i}</option>`).join("");
   $("mapMonth").innerHTML = `<option value="0">All months</option>` + MONTHS.map((m, i) => `<option value="${i + 1}">${m}</option>`).join("");
 
   const fromHash = aoiFromHash();
@@ -1323,23 +1344,25 @@ async function init() {
   $("layerMode").onclick = (e) => {
     const b = e.target.closest("button"); if (!b) return;
     state.layer = b.dataset.layer;
-    $("layerMode").querySelectorAll("button").forEach((x) => x.setAttribute("aria-selected", String(x === b)));
+    $("layerMode").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
     refreshLayer();
   };
   $("audience").onclick = (e) => {
     const b = e.target.closest("button"); if (!b) return;
     state.audience = b.dataset.aud;
-    $("audience").querySelectorAll("button").forEach((x) => x.setAttribute("aria-selected", String(x === b)));
+    $("audience").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
     renderBriefing();
   };
-  $("mapYear").onchange = refreshLayer;
-  $("mapMonth").onchange = refreshLayer;
+  // one filter at a time: a single year (all its months) or one month (averaged over all years). The website
+  // publishes exactly these map layers, so both editions show and label the same thing.
+  $("mapYear").onchange = () => { if ($("mapYear").value !== "all") $("mapMonth").value = "0"; refreshLayer(); };
+  $("mapMonth").onchange = () => { if ($("mapMonth").value !== "0") $("mapYear").value = "all"; refreshLayer(); };
   $("season").onchange = (e) => { state.season = +e.target.value; dirty.add("chProfile"); flush(); };
   $("dayYear").onchange = (e) => { state.dayYear = +e.target.value; dirty.add("chDaily"); flush(); };
   $("calMode").onclick = (e) => {
     const b = e.target.closest("button"); if (!b) return;
     state.calMode = b.dataset.mode;
-    $("calMode").querySelectorAll("button").forEach((x) => x.setAttribute("aria-selected", String(x === b)));
+    $("calMode").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
     dirty.add("chCalendar"); flush();
   };
   $("csv").onclick = downloadCSV;
@@ -1380,6 +1403,7 @@ async function init() {
 }
 
 function rethemed() {
+  $("theme").setAttribute("aria-pressed", String(isDark()));
   Object.values(charts).forEach((c) => c.dispose());
   for (const k of Object.keys(charts)) delete charts[k];
   renderAll(); renderNowcast(); refreshBasemap();
