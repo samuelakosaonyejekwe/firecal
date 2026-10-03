@@ -12,13 +12,13 @@ NOW = dt.datetime.now(dt.timezone.utc)
 @pytest.fixture
 def world(monkeypatch):
     state = {"nasa": NOW - dt.timedelta(hours=1), "site": NOW - dt.timedelta(hours=1), "in_flight": False, "dispatched": 0,
-             "watcher": True, "watchers_started": 0}
+             "watcher": True, "watchers_started": 0, "guard": True, "guards_started": 0}
     monkeypatch.setattr(keeper, "nasa_state", lambda known=None: (state["nasa"], state.get("nasa_bytes", 2000)))
     monkeypatch.setattr(keeper, "website_url", lambda: "https://example.github.io/firecal/")
     monkeypatch.setattr(keeper, "website_state", lambda url: (state["site"], state.get("site_bytes", 1000) if state["site"] else None))
-    monkeypatch.setattr(keeper, "build_in_flight",
-                        lambda w=keeper.WORKFLOW: state["in_flight"] if w == keeper.WORKFLOW else state["watcher"])
-    state["workflows"], state["enabled"] = {w: "active" for w in (keeper.WORKFLOW, keeper.WATCHER, keeper.WORLD)}, 0
+    monkeypatch.setattr(keeper, "build_in_flight", lambda w=keeper.WORKFLOW: state["in_flight"] if w == keeper.WORKFLOW
+                        else state["guard"] if w == keeper.GUARD else state["watcher"])
+    state["workflows"], state["enabled"] = {w: "active" for w in (keeper.WORKFLOW, keeper.WATCHER, keeper.WORLD, keeper.GUARD)}, 0
 
     recent = (NOW - dt.timedelta(days=3)).isoformat().replace("+00:00", "Z")
     state["world_runs"] = [{"displayTitle": "Build world (update)", "status": "completed", "conclusion": "success", "createdAt": recent}]
@@ -39,6 +39,9 @@ def world(monkeypatch):
         elif args[2] == keeper.WATCHER:
             state["watchers_started"] += 1
             state["watcher"] = True
+        elif args[2] == keeper.GUARD:
+            state["guards_started"] += 1
+            state["guard"] = True
         else:
             state["dispatched"] += 1
     monkeypatch.setattr(keeper, "gh", fake_gh)
@@ -150,3 +153,12 @@ def test_no_world_update_while_one_is_recent_or_running(world):
                             "createdAt": NOW.isoformat().replace("+00:00", "Z")}]
     keeper.check_once()
     assert world["world_started"] == []
+
+
+def test_stopped_guardian_is_restarted_once(world):
+    # the watcher and the guardian keep each other alive, so neither needs GitHub's schedule
+    world["guard"] = False
+    msg, _ = keeper.check_once()
+    assert world["guards_started"] == 1 and "guardian" in msg and world["dispatched"] == 0
+    keeper.check_once()
+    assert world["guards_started"] == 1

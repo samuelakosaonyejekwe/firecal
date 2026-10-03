@@ -10,8 +10,9 @@ the site is current. It runs in two places:
     every 5 minutes for ~5.5 hours, then starts its own successor (no laptop, no GitHub schedule);
   * on this computer, every 15 minutes while the local FireCal server runs (a second safety net).
 
-Each check also restarts the cloud watcher if none is running, and switches the website schedule
-back on if GitHub has disabled it (GitHub does that after 60 days without repository activity).
+Each check also restarts the cloud watcher and the guardian (.github/workflows/guard.yml) if either isn't running,
+so the two self-renewing chains keep each other alive without GitHub's schedule, and switches every scheduled
+workflow back on if GitHub has disabled it (GitHub does that after 60 days without repository activity).
 
     .venv/bin/python pipeline/keeper.py              # one check
     .venv/bin/python pipeline/keeper.py --watch 320  # check every 5 minutes for 320 minutes (cloud)
@@ -33,6 +34,7 @@ from pipeline.sync import WORKFLOW, gh, github_available  # noqa: E402
 
 WATCHER = "live.yml"  # the cloud watcher workflow
 WORLD = "world.yml"  # the cloud world build
+GUARD = "guard.yml"  # the guardian: a second self-renewing chain that restarts the watcher (and the watcher restarts it)
 INTERVAL = 15 * 60   # seconds between checks on this computer
 WATCH_EVERY = 5 * 60 # seconds between checks in the cloud watcher
 GRACE = 20           # minutes to leave GitHub's own schedule before stepping in (this computer)
@@ -94,11 +96,20 @@ def ensure_watcher() -> str | None:
     return "cloud watcher was not running; started it"
 
 
+def ensure_guard() -> str | None:
+    """Start the guardian if none is running: the watcher and the guardian keep each other alive, so neither
+    depends on GitHub's schedule, which drops most runs."""
+    if build_in_flight(GUARD):
+        return None
+    gh("workflow", "run", GUARD)
+    return "guardian was not running; started it"
+
+
 def ensure_schedule_enabled() -> str | None:
     """GitHub disables scheduled workflows after 60 days without repository activity, and a disabled workflow
     can't be started at all; switch the website build, the watcher and the world build back on."""
     notes = []
-    for wf, what in ((WORKFLOW, "website"), (WATCHER, "watcher"), (WORLD, "world build")):
+    for wf, what in ((WORKFLOW, "website"), (WATCHER, "watcher"), (WORLD, "world build"), (GUARD, "guardian")):
         state = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/actions/workflows/{wf}"))["state"]
         if state != "active":
             gh("workflow", "enable", wf)
@@ -109,7 +120,7 @@ def ensure_schedule_enabled() -> str | None:
 def check_once(last_request: dt.datetime | None = None, grace: int = GRACE) -> tuple[str, dt.datetime | None]:
     """One check. Returns (what happened, time of the last rebuild request)."""
     notes = []
-    for fix in (ensure_schedule_enabled, ensure_watcher, ensure_world_update):
+    for fix in (ensure_schedule_enabled, ensure_watcher, ensure_guard, ensure_world_update):
         try:
             if note := fix():
                 notes.append(note)
