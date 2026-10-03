@@ -909,21 +909,34 @@ function renderCalendar() {
                                    : rampLegend(colors, "0", `${fmt(vmax)}+`, "fire cell-days per month");
 }
 
+// the season year starts on d.season_start ("MM-DD", the area's quietest point); month starts within it, as
+// [day offset, month index], for chart axes
+function seasonStart(year) { const k = state.data.season_start; return Date.UTC(year, +k.slice(0, 2) - 1, +k.slice(3)); }
+function monthTicks() {
+  const a = seasonStart(2001), out = [];
+  for (let i = 0; i < 13; i++) {
+    const m = (new Date(a).getUTCMonth() + i) % 12, t = Date.UTC(2001 + (new Date(a).getUTCMonth() + i >= 12 ? 1 : 0), m, 1);
+    const off = Math.round((t - a) / 864e5);
+    if (off >= 0 && off < 365) out.push([off, m]);
+  }
+  return out;
+}
+
 function renderCritical() {
-  const d = state.data, c = d.critical, s0 = d.season_start_month;
+  const d = state.data, c = d.critical;
   if (!c) { $("critical").innerHTML = `<p class="empty">Too little fire activity in this area to define a season.</p>`; return; }
   const pct = (off) => (off / 365) * 100;
-  const axis = Array.from({ length: 12 }, (_, i) => MONTHS[(s0 - 1 + i) % 12]);
   // today's position within the season year
-  const t = new Date(), y0 = t.getUTCMonth() + 1 >= s0 ? t.getUTCFullYear() : t.getUTCFullYear() - 1;
-  const todayOff = (Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate()) - Date.UTC(y0, s0 - 1, 1)) / 864e5;
+  const t = new Date(), today = Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate());
+  const y0 = today >= seasonStart(t.getUTCFullYear()) ? t.getUTCFullYear() : t.getUTCFullYear() - 1;
+  const todayOff = (today - seasonStart(y0)) / 864e5;
   $("critical").innerHTML = `
     <div class="crit-bar" id="critBar">
       <div class="span" style="left:${pct(c.start_off)}%;width:${pct(c.end_off - c.start_off)}%"></div>
       <div class="pk" style="left:${pct(c.peak_off)}%"></div>
       <div class="today" style="left:${pct(todayOff)}%"><span>Today</span></div>
     </div>
-    <div class="crit-axis">${axis.map((m) => `<span>${m}</span>`).join("")}</div>
+    <div class="crit-axis">${monthTicks().map(([off, m]) => `<span style="left:${pct(off)}%${off === 0 ? ";transform:none" : ""}">${MONTHS[m]}</span>`).join("")}</div>
     <div class="crit-facts">
       <div><span>Season opens</span><b>${c.start}</b></div>
       <div><span>Peak burning</span><b>${c.peak}</b></div>
@@ -944,8 +957,7 @@ function renderUnusual() {
 }
 
 function seasonKeys() {
-  const s0 = state.data.season_start_month, keys = state.data.climatology.keys;
-  const i0 = keys.findIndex((k) => +k.slice(0, 2) === s0);
+  const keys = state.data.climatology.keys, i0 = Math.max(0, keys.indexOf(state.data.season_start));
   return keys.slice(i0).concat(keys.slice(0, i0));
 }
 function renderProfile() {
@@ -1026,12 +1038,15 @@ function renderDaily() {
 
 function renderTiming() {
   const ss = state.data.seasons.filter((s) => s.start_off != null);
-  const s0 = state.data.season_start_month;
+  const ticks = monthTicks(), month = new Map(ticks);
   chart("chTiming").setOption({
     ...base(),
     grid: { left: 64, right: 12, top: 8, bottom: 26 },
-    xAxis: { type: "value", min: 0, max: 365, interval: narrow("chTiming") ? 60.8 : 30.4, ...axisCommon(), // phones: every other month
-             axisLabel: { color: css("--muted"), fontSize: 11, formatter: (v) => MONTHS[(s0 - 1 + Math.round(v / 30.4)) % 12] } },
+    // labels at the month starts within the season year (phones: every other month)
+    xAxis: { type: "value", min: 0, max: 365, ...axisCommon(),
+             axisLabel: { color: css("--muted"), fontSize: 11, customValues: ticks.filter((_, i) => !narrow("chTiming") || i % 2 === 0).map(([o]) => o),
+                          formatter: (v) => (month.has(v) ? MONTHS[month.get(v)] : "") },
+             axisTick: { show: false, customValues: ticks.map(([o]) => o) }, splitLine: { show: true, lineStyle: { color: css("--grid") } } },
     yAxis: { type: "category", data: ss.map((s) => s.label), inverse: true, ...axisCommon(), splitLine: { show: false } },
     tooltip: { ...base().tooltip, trigger: "axis", axisPointer: { type: "shadow", shadowStyle: { color: css("--grid"), opacity: 0.5 } },
       formatter: (ps) => { const s = ss[ps[0].dataIndex];

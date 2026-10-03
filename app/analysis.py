@@ -46,7 +46,7 @@ import shapely
 from shapely.geometry import box, shape
 
 from .constants import (AQUA_START, CELL, LAMBDA, LAMBDA_AREA, MAX_CV_ERROR, MAX_MAP_CELLS, MIN_OVERLAP_CELL_DAYS,
-                        MIN_R2, MODIS_START, PRIOR_FILE, TERRA_DRIFT, VIIRS_START, load_outages, load_prior)
+                        MIN_R2, MODIS_START, PRIOR_FILE, QUIET_DAYS, TERRA_DRIFT, VIIRS_START, load_outages, load_prior)
 
 # fingerprint of the analysis code: cached results are invalidated whenever the method changes
 # (the prior file too: its worldwide ratios and sensor outage days change every result)
@@ -83,6 +83,36 @@ def layer_years(month, end) -> float:
     if month:
         return sum(MODIS_START <= pd.Timestamp(y, int(month), 1) <= end for y in range(MODIS_START.year, end.year + 1))
     return ((end - MODIS_START).days + 1) / 365.2425
+
+
+def season_start(mean: np.ndarray, keys: list) -> tuple[str, int, int]:
+    """The day fire seasons start ("MM-DD", month, day): the middle of the QUIET_DAYS-long stretch of the mean year
+    (`mean` per calendar day, `keys` "MM-DD") with the least burning, around New Year; where several days tie (a
+    long stretch without fire), the middle of the longest run of them."""
+    n, w = len(mean), QUIET_DAYS // 2
+    if not n or not np.isfinite(mean).any():
+        return "01-01", 1, 1
+    v = np.nan_to_num(mean)
+    sums = np.round([sum(v[(i + j) % n] for j in range(-w, w + 1)) for i in range(n)], 9)  # (summed in order, as engine.js)
+    tied = sums == sums.min()
+    best = 0
+    if not tied.all():  # several equally quiet days (e.g. months without any fire): the middle of the longest such run
+        f = int(np.argmin(tied))  # a day outside every run: scan around the calendar from there
+        runs, start, length = [], None, 0
+        for i in range(f + 1, f + n + 1):
+            if tied[i % n]:
+                start, length = (i if start is None else start), length + 1
+            elif start is not None:
+                runs.append((start, length)); start, length = None, 0
+        s0, ln = max(runs, key=lambda r: r[1])  # (the first of the longest)
+        best = (s0 + (ln - 1) // 2) % n
+    k = keys[best]
+    return k, int(k[:2]), int(k[3:])
+
+
+def one_year(month: int, day: int) -> bool:
+    """A season is named by one year when at least 95% of it falls in that calendar year (it starts by 19 Jan)."""
+    return month == 1 and day <= 19
 
 
 def vequiv_sql(k, kt, scale: dict | None = None) -> str:
@@ -561,13 +591,13 @@ class Store:
         clim = pd.DataFrame({"mean": np.nanmean(vals, 0), "p10": q(vals, 0.1, 0), "p50": q(vals, 0.5, 0),
                              "p90": q(vals, 0.9, 0)}, index=piv.columns)
 
-        # ---- fire seasons: start the season the month after the quietest month
-        s0 = int((np.nanargmin(mu) + 1) % 12) + 1 if np.isfinite(mu).any() else 1
+        # ---- fire seasons: from the quietest point of the mean year (season_start) to the day before it a year later
+        sm, s0m, s0d = season_start(clim["mean"].to_numpy(dtype=float), list(clim.index))
         seasons = []
         y = start.year - 1
         while True:
-            a = pd.Timestamp(y, s0, 1)
-            b = pd.Timestamp(y + 1, s0, 1) - pd.Timedelta(days=1)
+            a = pd.Timestamp(y, s0m, s0d)
+            b = pd.Timestamp(y + 1, s0m, s0d) - pd.Timedelta(days=1)
             y += 1
             if a < start:
                 continue
@@ -575,7 +605,7 @@ class Store:
                 break
             seg, seg7 = h[a:b], h7[a:b]
             tot = float(seg.sum())
-            lab = str(a.year) if s0 == 1 else f"{a.year}–{str(a.year + 1)[2:]}"
+            lab = str(a.year) if one_year(s0m, s0d) else f"{a.year}–{str(a.year + 1)[2:]}"
             row = {"label": lab, "start_year": a.year, "from": a.date().isoformat(), "total": _r(tot, 1)}
             if tot >= 5:
                 # tolerances keep dates independent of floating-point noise (and identical in engine.js)
@@ -595,7 +625,7 @@ class Store:
         timed = [s for s in seasons if "start_off" in s]
 
         def off_label(off):
-            return (pd.Timestamp(2001, s0, 1) + pd.Timedelta(days=int(round(off)))).strftime("%d %b")
+            return (pd.Timestamp(2001, s0m, s0d) + pd.Timedelta(days=int(round(off)))).strftime("%d %b")
 
         critical = None
         if len(timed) >= 3:
@@ -639,7 +669,7 @@ class Store:
                         "normal": _rl(mu, 1), "sd": _rl(sd, 1)},
             "unusual": unusual[:12],
             "climatology": {"keys": list(clim.index), **{c: _rl(clim[c], 2) for c in clim.columns}},
-            "season_start_month": s0,
+            "season_start": sm,  # "MM-DD"
             "seasons": seasons,
             "critical": critical,
             "top_weeks": [pd.Timestamp(f"2001-{k}").strftime("%d %b") for k in top_weeks],

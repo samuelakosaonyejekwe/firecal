@@ -31,6 +31,11 @@ MIN_OVERLAP_CELL_DAYS = 3000  # VIIRS fire cell-days in the 2012+ overlap years
 MIN_R2 = 0.5                  # fit of harmonized MODIS to VIIRS, monthly
 MAX_CV_ERROR = 15.0           # % median out-of-sample error
 
+# fire seasons start at the quietest point of the area's mean year: the middle of the QUIET_DAYS-long stretch with
+# the least burning. Placed to the day (not snapped to a month), a small change in the data moves it by days, not a
+# month; 61 days keeps it steady when one year is added or dropped (tested on all 208 countries)
+QUIET_DAYS = 61
+
 MAX_MAP_CELLS = 20000  # map layers are merged into coarser squares beyond this many cells
 
 # largest custom box (square degrees); whole countries have no limit

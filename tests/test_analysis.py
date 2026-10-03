@@ -62,7 +62,7 @@ def test_season_and_critical_period(store):
     a = store.analyze({"country": "Nigeria"})
     assert a["critical"] is not None
     assert a["critical"]["peak"].split()[1] in {"Dec", "Jan", "Feb"}
-    assert a["season_start_month"] not in (12, 1, 2)  # the season isn't split across the new year
+    assert int(a["season_start"][:2]) not in (12, 1, 2)  # the season isn't split across the new year
 
 
 def test_unprocessed_country_needs_data(store):
@@ -182,6 +182,30 @@ def test_live_week_without_fires_in_a_box_with_industrial_heat(tmp_path):
     nrt = pd.DataFrame({"d": days, "yi": 0, "xi": 0, "n": 1, "frp": 1.0})  # every live fire is far from the box
     out = Store(tmp_path, RES).nowcast(nrt, {"bbox": [8.4, 8.8, 8.9, 9.3]})
     assert out["available"] and out["total"] == 0 and out["static_cells_masked"] == 1
+
+
+def test_season_start_moves_by_days_not_months():
+    """Two almost equally quiet months (Russia: Dec vs Jan) must not flip the season start by a month."""
+    from app.analysis import season_start
+    keys = [d.strftime("%m-%d") for d in pd.date_range("2001-01-01", "2001-12-31")]
+    doy = np.arange(365)
+    # spring and summer fires over a winter trough that is lowest around 10 January, as in Russia
+    base = 50 * np.exp(-((doy - 120) / 25.0) ** 2) + 40 * np.exp(-((doy - 220) / 30.0) ** 2) + 1.5 - np.cos(2 * np.pi * (doy - 10) / 365) / 2
+    a, *_ = season_start(base, keys)
+    assert a in ("01-09", "01-10", "01-11")
+    rng = np.random.default_rng(3)
+    for _ in range(20):  # small changes in the data (a year added or dropped)
+        b, *_ = season_start(base * rng.uniform(.95, 1.05, 365), keys)
+        gap = abs((pd.Timestamp(f"2001-{a}") - pd.Timestamp(f"2001-{b}")).days)
+        assert min(gap, 365 - gap) <= 21, (a, b)  # days, never a month's jump
+
+
+def test_season_start_in_a_long_stretch_without_fire_is_its_middle():
+    from app.analysis import season_start
+    keys = [d.strftime("%m-%d") for d in pd.date_range("2001-01-01", "2001-12-31")]
+    v = np.zeros(365); v[90:240] = 10.0  # fires 1 April – 27 August only
+    k, m, d = season_start(v, keys)
+    assert (m, d) == (12, 14)  # the middle of the fireless 28 Aug – 31 Mar stretch (as the 61-day window sees it)
 
 
 def test_map_layers_average_over_the_years_that_hold_each_month():

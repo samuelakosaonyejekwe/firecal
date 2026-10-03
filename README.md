@@ -166,7 +166,7 @@ API: `/api/calendar?country=Kenya` or `?bbox=w,s,e,n`, `/api/nowcast`, `/api/gri
 - Place names come from the nearest notable town among every GeoNames town of 1 000+ people (bigger towns count as a little closer: distance / (1 + 0.25·log10(population / 1000))); each 2° tile holds every town that can win somewhere inside it, so the answer is the same as searching every town on Earth. Places with no town within 250 km at all (open ocean, ice sheets) get none.
 - Fire cell-days measure *how widespread* burning is, not burned area or emissions.
 - Partial sensor losses (a sensor at a quarter to a half of its usual share, e.g. Aqua in August 2020) are not corrected; only clear outages are (see the method, step 5).
-- The season starts the month after the quietest month; where two months are almost equally quiet (e.g. Russia, December vs January), a small change in the data can move the start by a month.
+- A fire season runs from the area's quietest day to the day before it a year later: the middle of the 61-day stretch of the mean year with the least burning (`app/constants.py` QUIET_DAYS), placed to the day, so a new year of data moves it by days, not a month (e.g. Russia: 11 January). A season is named by one year when at least 95% of it falls in that year (it starts by 19 January), otherwise by two (e.g. 2023–24); the latest full season is the last one that ends within the archive.
 
 ## License
 

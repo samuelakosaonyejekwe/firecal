@@ -14,7 +14,7 @@
   const TERRA_DRIFT = Date.UTC(2022, 0, 1); // as app/constants.py
   const LAMBDA = 20, LAMBDA_AREA = 50;
   // reliability flags and map size: the same values as app/constants.py (tests/test_engine_parity.py)
-  const MIN_OVERLAP_CELL_DAYS = 3000, MIN_R2 = 0.5, MAX_CV_ERROR = 15, MAX_MAP_CELLS = 20000, CELL = 10;
+  const MIN_OVERLAP_CELL_DAYS = 3000, MIN_R2 = 0.5, MAX_CV_ERROR = 15, MAX_MAP_CELLS = 20000, CELL = 10, QUIET_DAYS = 61;
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
   // ---------- small numeric helpers (numpy/pandas semantics) ----------
@@ -219,18 +219,39 @@
       clim.mean.push(nanmean(vals)); clim.p10.push(quantile(vals, 0.1)); clim.p50.push(quantile(vals, 0.5)); clim.p90.push(quantile(vals, 0.9));
     }
 
-    // fire seasons: start the month after the quietest month
-    let argmin = 0; mu.forEach((v, i) => { if (isNum(v) && (!isNum(mu[argmin]) || v < mu[argmin])) argmin = i; });
-    const s0 = mu.some(isNum) ? ((argmin + 1) % 12) + 1 : 1;
+    // fire seasons: from the quietest point of the mean year (the middle of the QUIET_DAYS stretch with the least
+    // burning, around the calendar; on a tie, the middle of the longest run of tied days) to the day before it a year
+    // later (as analysis.py season_start)
+    let startKey = "01-01";
+    if (clim.mean.some(isNum)) {
+      const n = keys.length, w = Math.floor(QUIET_DAYS / 2), v = clim.mean.map((x) => (isNum(x) ? x : 0));
+      const r9 = (x) => Math.round(x * 1e9) / 1e9, sums = [];
+      for (let i = 0; i < n; i++) { let sm = 0; for (let j = -w; j <= w; j++) sm += v[(((i + j) % n) + n) % n]; sums.push(r9(sm)); }
+      const lo = Math.min(...sums), tied = sums.map((x) => x === lo);
+      let best = 0;
+      if (!tied.every(Boolean)) { // equally quiet days (e.g. months without fire): the middle of the longest run of them
+        const f = tied.indexOf(false), runs = [];
+        let st = null, len = 0;
+        for (let i = f + 1; i <= f + n; i++) {
+          if (tied[i % n]) { if (st === null) st = i; len++; } else if (st !== null) { runs.push([st, len]); st = null; len = 0; }
+        }
+        let [s0r, ln] = runs[0];
+        for (const [a, l] of runs) if (l > ln) { s0r = a; ln = l; }
+        best = (s0r + Math.floor((ln - 1) / 2)) % n;
+      }
+      startKey = keys[best];
+    }
+    const s0 = +startKey.slice(0, 2), d0 = +startKey.slice(3);
+    const oneYear = s0 === 1 && d0 <= 19; // named by one year when ≥ 95% of the season falls in it
     const dayIndex = (t) => Math.round((t - MODIS_START) / DAY);
     const seasons = [];
     for (let y = startYear - 1; ; y++) {
-      const a = Date.UTC(y, s0 - 1, 1), b = Date.UTC(y + 1, s0 - 1, 1) - DAY;
+      const a = Date.UTC(y, s0 - 1, d0), b = Date.UTC(y + 1, s0 - 1, d0) - DAY;
       if (a < MODIS_START) continue;
       if (b > end) break;
       const ia = dayIndex(a), ib = dayIndex(b);
       let tot = 0; for (let i = ia; i <= ib; i++) tot += h[i];
-      const label = s0 === 1 ? String(y) : `${y}–${String(y + 1).slice(2)}`;
+      const label = oneYear ? String(y) : `${y}–${String(y + 1).slice(2)}`;
       const row = { label, start_year: y, from: iso(a), total: r(tot, 1) };
       if (tot >= 5) {
         // same tolerances as analysis.py so dates don't depend on floating-point noise
@@ -253,7 +274,7 @@
     const tots = seasons.map((s) => s.total), smu = tots.length ? sum(tots) / tots.length : NaN, ssd = nanstd1(tots);
     for (const s of seasons) s.z = ssd > 0 ? r((s.total - smu) / ssd) : null;
     const timed = seasons.filter((s) => s.start_off != null);
-    const offLabel = (off) => fmtDM(Date.UTC(2001, s0 - 1, 1) + roundEven(off) * DAY);
+    const offLabel = (off) => fmtDM(Date.UTC(2001, s0 - 1, d0) + roundEven(off) * DAY);
     let critical = null;
     if (timed.length >= 3) {
       const med = {}; for (const k of ["start_off", "peak_off", "end_off"]) med[k] = median(timed.map((s) => s[k]));
@@ -285,7 +306,7 @@
       monthly: { years, values: mat.map((row) => rl(row, 1)), z: z.map((row) => rl(row)), normal: rl(mu, 1), sd: rl(sd, 1) },
       unusual: unusual.slice(0, 12),
       climatology: { keys, mean: rl(clim.mean), p10: rl(clim.p10), p50: rl(clim.p50), p90: rl(clim.p90) },
-      season_start_month: s0, seasons, critical,
+      season_start: startKey, seasons, critical,
       top_weeks: topWeeks.map((k) => fmtDM(Date.UTC(2001, +k.slice(0, 2) - 1, +k.slice(3)))),
       yearly: { years: ys, m: ys.map((y) => r(ym.get(y) || 0, 0)), v: ys.map((y) => (Date.UTC(y, 0, 1) < VIIRS_START ? null : r(yv.get(y) || 0, 0))), h: ys.map((y) => r(yh.get(y) || 0, 0)) },
     };
@@ -325,6 +346,6 @@
 
   const api = { analyze, series, nowcast, harmonize, DAY,
                 constants: { MODIS_START, AQUA_START, VIIRS_START, TERRA_DRIFT, LAMBDA, LAMBDA_AREA, MIN_OVERLAP_CELL_DAYS, MIN_R2,
-                             MAX_CV_ERROR, MAX_MAP_CELLS, CELL } };
+                             MAX_CV_ERROR, MAX_MAP_CELLS, CELL, QUIET_DAYS } };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.FireEngine = api;
 })(typeof self !== "undefined" ? self : this);

@@ -104,3 +104,4 @@ def test_engine_constants_match_python():
     assert js["LAMBDA"] == C.LAMBDA and js["LAMBDA_AREA"] == C.LAMBDA_AREA
     assert js["MIN_OVERLAP_CELL_DAYS"] == C.MIN_OVERLAP_CELL_DAYS and js["MIN_R2"] == C.MIN_R2
     assert js["MAX_CV_ERROR"] == C.MAX_CV_ERROR and js["MAX_MAP_CELLS"] == C.MAX_MAP_CELLS and js["CELL"] == C.CELL
+    assert js["QUIET_DAYS"] == C.QUIET_DAYS

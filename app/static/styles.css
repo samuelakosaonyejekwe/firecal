@@ -172,7 +172,9 @@ body { padding-bottom: env(safe-area-inset-bottom); }
 .crit-bar { position: relative; height: 40px; margin: 18px 0 6px; border-radius: 6px; background: var(--surface-2); }
 .crit-bar .span { position: absolute; top: 0; bottom: 0; border-radius: 6px; background: var(--q3); opacity: .9; }
 .crit-bar .pk { position: absolute; top: -6px; bottom: -6px; width: 3px; margin-left: -1.5px; background: var(--ink); border-radius: 2px; }
-.crit-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.crit-axis { position: relative; height: 16px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.crit-axis span { position: absolute; top: 0; transform: translateX(-50%); }  /* at each month's start */
+@media (max-width: 480px) { .crit-axis span:nth-child(even) { display: none; } }
 .crit-facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
 .crit-facts div { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
 .crit-facts b { display: block; font-size: 16px; }
