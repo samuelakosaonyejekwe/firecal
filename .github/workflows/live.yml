@@ -94,10 +94,19 @@ jobs:
           MINUTES: ${{ inputs.minutes || '320' }}
         run: python pipeline/keeper.py --watch "$MINUTES"
       - name: Hand over to the next watcher
-        # only after a watch that ran: if installing or starting fails, the 2-hourly schedule restarts the chain
-        # later instead of a failing run starting the next one at once, forever (a cancelled watcher isn't replaced)
-        if: ${{ steps.watch.outcome == 'success' }}
-        continue-on-error: true   # the 2-hourly schedule and every website build restart the watcher anyway
+        # Always (unless you cancel this run): the chain must never depend on GitHub's schedule, which drops most
+        # runs. After a watch that didn't finish normally (e.g. a failed install), wait 15 minutes first, so a lasting
+        # problem can't turn into a fast loop of runs; GitHub API hiccups are retried for several minutes.
+        if: ${{ !cancelled() && steps.key.outcome == 'success' }}
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.FIRECAL_PUBLISH_TOKEN }}
-        run: gh workflow run live.yml
+          WATCH: ${{ steps.watch.outcome }}
+        run: |
+          if [ "$WATCH" != "success" ]; then echo "the watch didn't finish normally ($WATCH); handing over in 15 minutes"; sleep 900; fi
+          for wait in 30 60 120 240 0; do
+            gh workflow run live.yml --repo "$GITHUB_REPOSITORY" && echo "next watcher started" && exit 0
+            [ "$wait" = 0 ] && break
+            echo "GitHub didn't accept the hand-over; trying again in $wait s"; sleep "$wait"
+          done
+          echo "::warning::could not start the next watcher; the website build and the schedule restart it"
