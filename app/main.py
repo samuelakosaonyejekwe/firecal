@@ -207,7 +207,7 @@ def job_status():
 
 
 # ───────────────────────────── web app ─────────────────────────────
-@app.get("/", response_class=HTMLResponse)
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)  # (HEAD: uptime monitors, link checkers)
 def index():
     html = (STATIC / "index.html").read_text(encoding="utf-8").replace("{{v}}", VERSION)
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
