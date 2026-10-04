@@ -526,6 +526,12 @@ tbody tr:hover td { background: var(--surface-2); }
 .secnav a:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .sec { scroll-margin-top: calc(var(--topbar-h, 62px) + 70px); }
 .content[aria-busy="true"] .secnav-wrap, .secnav.off { visibility: hidden; }
+/* the plain address: nothing is chosen yet, so only the invitation to choose an area shows */
+.content.start .btn-row, .content.start .secnav-wrap, .content.start #nowCard, .content.start #results { display: none; }
+.start-picks { display: none; }
+.content.start .start-picks { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.start-picks span { color: var(--muted); font-size: 13px; margin-right: 2px; }
+.start-picks button { min-height: 34px; padding: 6px 14px; border-radius: 999px; font-size: 13.5px; }
 @media print { .secnav-wrap { display: none !important; } .aoi-head h2 { color: #000; background: none; } }
 
 /* loading skeletons (reserve space, no layout jumps) */

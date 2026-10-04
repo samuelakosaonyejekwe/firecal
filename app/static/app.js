@@ -75,7 +75,7 @@ function aoiFromHash() {
   if ((p.get("country") || "").trim()) {
     const c = findCountry(p.get("country"));
     if (c) return { country: c.id };
-    hashProblem = `The link asked for “${p.get("country").slice(0, 60)}”, which isn't a country FireCal knows. Showing another area instead; search for the one you want above.`;
+    hashProblem = `The link asked for “${p.get("country").slice(0, 60)}”, which isn't a country FireCal knows. Search for the one you want above.`;
   }
   if (p.get("bbox")) {
     const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -84,7 +84,7 @@ function aoiFromHash() {
       const b = [clamp(r[0], -180, 180), clamp(r[1], -90, 90), clamp(r[2], -180, 180), clamp(r[3], -90, 90)];
       if (b[0] < b[2] && b[1] < b[3]) return { bbox: b };
     }
-    hashProblem = "The link's box coordinates aren't valid (west, south, east, north in degrees). Showing another area instead.";
+    hashProblem = "The link's box coordinates aren't valid (west, south, east, north in degrees). Choose an area on the map or search above.";
   }
   return null;
 }
@@ -97,6 +97,7 @@ function selectAOI(a, { fly = true } = {}) {
   if (!a) return;
   if (aoiKey(a) === aoiKey(state.aoi) && (shown() || state.loadingKey === aoiKey(a))) return; // already shown or on its way
   state.aoi = a;
+  $("content").classList.remove("start");
   history.replaceState(null, "", `#${aoiQuery(a)}`);
   $("search").value = a.country ? state.byId[a.country].name : "";
   drawAOI();
@@ -442,6 +443,19 @@ function hideTip() {
 }
 // a tap anywhere outside the pinned card closes it
 document.addEventListener("pointerdown", (ev) => { if (tipPinned && !$("tip").contains(ev.target) && !ev.target.closest?.("#map")) hideTip(); }, { passive: true });
+
+// the plain address: no area yet, just how to choose one (a link's unusable area also lands here)
+const START_PICKS = ["Nigeria", "Brazil", "Australia", "Canada", "Indonesia", "Cyprus"];
+function showStart() {
+  $("content").classList.add("start");
+  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+  $("aoiTitle").textContent = "Choose an area";
+  $("aoiSub").textContent = "Search any country above, click one on the map, tap ◎ Me for where you are, or Draw area for a box of your own.";
+  const picks = START_PICKS.filter((id) => state.byId[id] && !state.byId[id].unavailable);
+  $("startPicks").innerHTML = picks.length ? `<span>Or try</span>` + picks.map((id) => `<button type="button" class="ghost" data-country="${esc(id)}">${esc(state.byId[id].name)}</button>`).join("") : "";
+  $("startPicks").onclick = (e) => { const b = e.target.closest("button[data-country]"); if (b) selectAOI({ country: b.dataset.country }); };
+  setBusy(false);
+}
 
 // ───────────────────────── loading an AOI ─────────────────────────
 function setBusy(on, msg) {
@@ -1344,15 +1358,16 @@ async function init() {
   }
   $("mapMonth").innerHTML = `<option value="0">All months</option>` + MONTHS.map((m, i) => `<option value="${i + 1}">${m}</option>`).join("");
 
-  // the plain address starts fresh for everyone, every time; only a link that names an area opens that area
+  // the plain address starts fresh for everyone, every time, with no area chosen and a clean address bar;
+  // only a link that names an area opens that area
   try { localStorage.removeItem("firecal-aoi"); } catch (_) {} // the last-area memory earlier versions kept
-  const firstReady = state.meta.countries.find((c) => c.id === "Nigeria" && c.ready) || state.meta.countries.find((c) => c.ready);
-  state.aoi = aoiFromHash() || (firstReady ? { country: firstReady.id } : { country: "Nigeria" });
-
   if (matchMedia("(max-width: 1100px)").matches) $("methodBox").open = false;
-  history.replaceState(null, "", `#${aoiQuery(state.aoi)}`);
-  if (state.aoi.country) $("search").value = state.byId[state.aoi.country].name;
-  loadAOI(); // its data is on the way before the map takes the main thread to build
+  state.aoi = aoiFromHash();
+  if (state.aoi) {
+    history.replaceState(null, "", `#${aoiQuery(state.aoi)}`);
+    if (state.aoi.country) $("search").value = state.byId[state.aoi.country].name;
+    loadAOI(); // its data is on the way before the map takes the main thread to build
+  } else showStart();
   if (window.maplibregl) initMap(); else mapUnavailable();
   if (hashProblem) toast(hashProblem, 7000);
   if (!store.get("firecal-seen-help")) { store.set("firecal-seen-help", "1"); openHelp(); }
