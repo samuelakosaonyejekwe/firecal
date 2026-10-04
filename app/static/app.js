@@ -98,7 +98,6 @@ function selectAOI(a, { fly = true } = {}) {
   if (aoiKey(a) === aoiKey(state.aoi) && (shown() || state.loadingKey === aoiKey(a))) return; // already shown or on its way
   state.aoi = a;
   history.replaceState(null, "", `#${aoiQuery(a)}`);
-  store.set("firecal-aoi", aoiQuery(a));
   $("search").value = a.country ? state.byId[a.country].name : "";
   drawAOI();
   const v = aoiView(a);
@@ -1345,10 +1344,10 @@ async function init() {
   }
   $("mapMonth").innerHTML = `<option value="0">All months</option>` + MONTHS.map((m, i) => `<option value="${i + 1}">${m}</option>`).join("");
 
-  const fromHash = aoiFromHash();
-  const saved = (() => { const p = new URLSearchParams(store.get("firecal-aoi") || ""); return p.get("country") && state.byId[p.get("country")] ? { country: p.get("country") } : null; })();
+  // the plain address starts fresh for everyone, every time; only a link that names an area opens that area
+  try { localStorage.removeItem("firecal-aoi"); } catch (_) {} // the last-area memory earlier versions kept
   const firstReady = state.meta.countries.find((c) => c.id === "Nigeria" && c.ready) || state.meta.countries.find((c) => c.ready);
-  state.aoi = fromHash || saved || (firstReady ? { country: firstReady.id } : { country: "Nigeria" });
+  state.aoi = aoiFromHash() || (firstReady ? { country: firstReady.id } : { country: "Nigeria" });
 
   if (matchMedia("(max-width: 1100px)").matches) $("methodBox").open = false;
   history.replaceState(null, "", `#${aoiQuery(state.aoi)}`);
